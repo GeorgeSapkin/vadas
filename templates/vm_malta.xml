@@ -1,0 +1,41 @@
+<domain type='qemu'>
+  <name>{{VM_NAME}}</name>
+  <metadata>
+    <libosinfo:libosinfo xmlns:libosinfo="http://libosinfo.org/xmlns/libvirt/domain/1.0">
+      <libosinfo:os id="http://libosinfo.org/linux/2024"/>
+    </libosinfo:libosinfo>
+    <vadas:tags xmlns:vadas="urn:vadas">
+      <vadas:ip>{{NET_IP}}</vadas:ip>
+    </vadas:tags>
+  </metadata>
+  <memory unit='KiB'>262144</memory>
+  <vcpu placement='static'>1</vcpu>
+  <os>
+    <type arch='{{ARCH}}' machine='malta'>hvm</type>
+    <kernel>{{KERNEL}}</kernel>
+    <cmdline>root=/dev/sda console=ttyS0 rootwait</cmdline>
+    <boot dev='hd'/>
+  </os>
+  <devices>
+    <emulator>{{EMULATOR}}</emulator>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source file='{{ROOTFS}}'/>
+      <target dev='sda' bus='ide'/>
+    </disk>
+    <controller type='ide' index='0'/>
+    <controller type='pci' index='0' model='pci-root'/>
+    <interface type='network'>
+      <source network='{{NET_NAME}}'/>
+      <model type='pcnet'/>
+      <!-- Must be set manually -->
+      <!-- <address type="pci" domain="0x0000" bus="0x00" slot="0x12" function="0x0"/> -->
+    </interface>
+    <console type='pty'>
+      <target type='serial' port='0'/>
+    </console>
+    <rng model="virtio">
+      <backend model="random">/dev/urandom</backend>
+    </rng>
+  </devices>
+</domain>

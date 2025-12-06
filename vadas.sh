@@ -1,0 +1,1651 @@
+#!/bin/bash
+#
+# Copyright (c) 2025 George Sapkin
+#
+# SPDX-License-Identifier: GPL-2.0-only
+
+# TODO: armsr/armv7 is missing UEFI firmware in Fedora
+# TODO: malta/be64 and malta/le64 don't seem to boot
+readonly TARGETS=(
+  'armsr/armv8'
+  'malta/be'
+  'malta/le'
+  'x86/64'
+  'x86/generic'
+)
+
+readonly OPENWRT_DOWNLOAD_URL='https://downloads.openwrt.org'
+
+readonly VADAS_CONFIG_DIR="${VADAS_CONFIG_DIR:-${HOME}/.config/vadas}"
+readonly VADAS_IMAGE_DIR="${VADAS_IMAGE_DIR:-${VADAS_CONFIG_DIR}/images}"
+readonly VADAS_TEMPLATE_DIR="${VADAS_TEMPLATE_DIR:-${VADAS_CONFIG_DIR}/templates}"
+readonly VADAS_TEMP_DIR="${VADAS_TEMP_DIR:-/tmp/vadas}"
+
+readonly MENU_HELP_BACK='(Enter to select, Esc to go back)'
+readonly MENU_HELP_EXIT='(Enter to select, Esc to exit)'
+
+readonly MENU_ITEM_LIMIT=10
+
+readonly NET_NAME='vadas'
+readonly NET_MASK='255.255.255.0'
+readonly NET_RANGES=('10.0.0.0/8' '172.16.0.0/12' '192.168.0.0/16')
+
+readonly VM_CORES=2
+readonly VM_RAM=524288
+
+function _print_help() {
+	local cmd="$1"
+
+	printf 'vadas - OpenWrt libvirt VM manager\n\nUsage: %s %s ' "$(basename "$0")" "$cmd"
+
+	case "$cmd" in
+	env)
+		cat <<-EOF
+
+
+		Display current environment configuration variables (e.g. directories).
+		EOF
+		;;
+	configure)
+		cat <<-EOF
+		<subcommand>
+
+		Subcommands:
+		  vm [<vm_name>]  Configure VM's network
+		EOF
+		;;
+	create)
+		cat <<-EOF
+		<subcommand>
+
+		Subcommands:
+		  network         Interactively create the virtual network
+		  vm              Interactively create a new VM
+		EOF
+		;;
+	clean)
+		cat <<-EOF
+		<subcommand>
+
+		Subcommands:
+		  images          Clean up unused disk images
+		  temp            Clean up temporary files
+		EOF
+		;;
+	list)
+		cat <<-EOF
+		<subcommand>
+
+		Subcommands:
+		  vm              List all created VMs
+		EOF
+		;;
+	remove)
+		cat <<-EOF
+		<subcommand>
+
+		Subcommands:
+		  image           Remove a downloaded image
+		  network         Remove the virtual network
+		  vm              Remove a VM
+		EOF
+		;;
+	ps)
+		cat <<-EOF
+		[--all]
+
+		List running VMs. Use --all to list suspended VMs as well.
+		EOF
+		;;
+	show)
+		cat <<-EOF
+		<subcommand>
+
+		Subcommands:
+		  ip [<vm_name>]  Show the IP address of a VM
+		EOF
+		;;
+	start)
+		cat <<-EOF
+		[<vm_name>]
+
+		Start a VM and connect to its console.
+		EOF
+		;;
+	stop)
+		cat <<-EOF
+		[<vm_name>] [--force]
+
+		Stop a running VM. Use --force to immediately destroy the VM.
+		EOF
+		;;
+	*)
+		cat <<-EOF
+		<command> [<arguments>...]
+
+		When no arguments are supplied, most commands are interactive.
+
+		Resource creation and removal:
+		  create          Create resources (e.g., 'vm')
+		  configure       Configure a resource (e.g., 'vm')
+		  remove|rm       Remove resources (e.g., 'network')
+		  clean           Clean up resources (e.g., 'temp')
+		  list            List resources (e.g., 'vm')
+
+		Resource management:
+		  start           Start a VM and connect to it
+		  stop|kill       Stop a running VM (use --force for immediate stop)
+		  pause|suspend   Pause a running VM
+		  resume          Resume a paused VM
+		  ps              List running VMs (--all includes paused VMs)
+		  show            Show resource details (e.g., 'ip')
+
+		Miscellaneous:
+		  env             Display environment variables
+		  ---help|-h      This help message
+		EOF
+		;;
+	esac
+}
+
+function _clean_vm_name() {
+	# Strip ANSI color codes and status prefix from the selection to get the raw
+	# VM name
+	<<< "$1" sed -e 's/\x1b\[[0-9;]*m//g' -e 's/^[●○] //'
+}
+
+function _confirm() {
+	local prompt="$1"
+	local default="${2:-n}"
+	local choice
+	local options
+
+	if [[ "$default" =~ ^[yY]$ ]]; then
+		options='[Y/n]'
+		read -r -p "$prompt $options " choice
+		case "$choice" in
+		[nN] | [nN][oO]) return 1 ;; # No
+		*) return 0 ;;               # Yes is default
+		esac
+	else
+		options='[y/N]'
+		read -r -p "$prompt $options " choice
+		case "$choice" in
+		[yY] | [yY][eE][sS]) return 0 ;; # Yes
+		*) return 1 ;;                   # No is default
+		esac
+	fi
+}
+
+function _confirm_overwrite() {
+	local file_path="$1"
+	if [ -f "$file_path" ]; then
+		_confirm "Image file '$(basename "$file_path")' already exists. Overwrite?"
+		return $?
+	fi
+	return 0
+}
+
+function _connect_to_vm() {
+	_ensure virsh
+
+	local vm_name="$1"
+	local boot_wait="${2:-0}"
+
+	if _confirm "Connect to console of '$vm_name'?"; then
+		stty sane
+		echo 'Please press Enter to activate this console after connecting.'
+		if [ "$boot_wait" -ne 0 ]; then
+			_countdown "$boot_wait" \
+				'Waiting for VM to boot to avoid mangled console output...'
+		fi
+		virsh console "$vm_name"
+	fi
+}
+
+function _countdown() {
+	local seconds="$1"
+	local msg="$2"
+
+	tput civis
+	trap 'tput cnorm; exit' INT TERM
+
+	echo -n "$msg"
+	while [ "$seconds" -gt 0 ]; do
+		printf ' %-2d' "$seconds"
+		sleep 1
+		printf '\b\b\b'
+		((seconds--))
+	done
+	echo ' 0 '
+
+	tput cnorm
+	trap - INT TERM
+}
+
+function _create_vm_generic() {
+	local version="$1"
+	local target="$2"
+
+	local profiles_path
+	profiles_path=$(_fetch_profiles "$version" "$target")
+	if [ $? -ne 0 ]; then
+		echo "Error: Failed to fetch profiles. The target '$target' may not be available for release '$version'."
+		exit 1
+	fi
+
+	local profiles_json
+	profiles_json=$(cat "$profiles_path")
+
+	local image_list
+	image_list=$(<<< "$profiles_json" jq -r '
+		.profiles[].images[] |
+		select(.type == "combined" or .type == "combined-efi") |
+		select(.filesystem == "ext4" or .filesystem == "squashfs") |
+		"\(.filesystem) \(.type)"
+	' | sort)
+
+	if [ -z "$image_list" ]; then
+		echo 'Error: No images found (combined/combined-efi) or failed to parse JSON.'
+		exit 1
+	fi
+
+	local options
+	readarray -t options <<< "$image_list"
+
+	local selected_image
+	selected_image=$(_interactive_menu \
+		"Select an image ${MENU_HELP_BACK}:" "${options[@]}" \
+	)
+	if [ $? -ne 0 ]; then
+		return 1
+	fi
+
+	local fs type
+	read -r fs type <<< "$selected_image"
+
+	local file_info
+	file_info=$(<<< "$profiles_json" jq -r --arg fs "$fs" --arg type "$type" '
+		.profiles[].images[] |
+		select(.filesystem == $fs and .type == $type) |
+		"\(.name) \(.sha256)"
+	')
+
+	local filename sha256
+	read -r filename sha256 <<<"$file_info"
+
+	if [ -z "$filename" ]; then
+		echo 'Error: Could not determine filename for selection.'
+		exit 1
+	fi
+
+	local local_path="$VADAS_TEMP_DIR/$filename"
+	local file_url
+	file_url=$(_get_image_url "$version" "$target" "$filename")
+	_download_image "$file_url" "$local_path" "$sha256"
+
+	local image_name
+	image_name=$(basename "$local_path" .gz)
+	if _confirm_overwrite "$VADAS_IMAGE_DIR/$image_name"; then
+		echo "Unpacking image to $VADAS_IMAGE_DIR..."
+		gunzip -c "$local_path" > "$VADAS_IMAGE_DIR/$image_name"
+	else
+		echo 'Using existing image.'
+	fi
+
+	local vm_name="${image_name%.img}"
+	local arch boot_wait cfg_sleep loader machine nvram_file nvram_template \
+		qemu_bin template
+
+	case "$target" in
+	# armsr/armv7)
+	# 	arch='armv7l'
+	# 	machine='virt'
+	# 	qemu_bin='/usr/bin/qemu-system-arm'
+	# 	template=vm_arm
+	# 	;;
+	armsr/armv8)
+		arch='aarch64'
+		boot_wait=20
+		loader='/usr/share/edk2/aarch64/QEMU_EFI-silent-pflash.qcow2'
+		machine='virt'
+		nvram_file="$VADAS_IMAGE_DIR/$(basename "$image_name" .img).nvram"
+		nvram_template='/usr/share/edk2/aarch64/vars-template-pflash.qcow2'
+		qemu_bin='/usr/bin/qemu-system-aarch64'
+		cfg_sleep=20
+		template=vm_arm
+		;;
+	x86/64)
+		arch='x86_64'
+		boot_wait=10
+		machine='q35'
+		qemu_bin='/usr/bin/qemu-system-x86_64'
+		cfg_sleep=5
+		template=vm_x86
+		;;
+	x86/generic)
+		arch='i686'
+		boot_wait=10
+		machine='pc'
+		qemu_bin='/usr/bin/qemu-system-i386'
+		cfg_sleep=5
+		template=vm_x86
+		;;
+	esac
+
+	local ip
+	ip=$(_get_next_ip)
+	if [ -z "$ip" ]; then
+		echo 'Error: Failed to find an available IP address for the VM.' >&2
+		return 1
+	fi
+	echo "Allocated IP: $ip"
+
+	local vm_xml
+	vm_xml=$(_render_template "$VADAS_TEMPLATE_DIR/$template.xml" \
+		'VM_CORES'        "$VM_CORES" \
+		'VM_NAME'         "$vm_name" \
+		'VM_RAM'          "$VM_RAM" \
+		'ARCH'            "$arch" \
+		'EMULATOR'        "$qemu_bin" \
+		'IMAGE'           "$VADAS_IMAGE_DIR/$image_name" \
+		'LOADER'          "$loader" \
+		'MACHINE'         "$machine" \
+		'NET_IP'          "$ip" \
+		'NET_NAME'        "$NET_NAME" \
+		'NVRAM_FILE'      "$nvram_file" \
+		'NVRAM_TEMPLATE'  "$nvram_template"
+	)
+
+	if _define_vm "$vm_name" "$vm_xml"; then
+		cmd_start "$vm_name" --no-connect
+
+		if _confirm "Configure network for '$vm_name'?" y; then
+			sub_cmd_configure_vm "$vm_name" "$boot_wait" "$cfg_sleep"
+			boot_wait=0
+		fi
+
+		_connect_to_vm "$vm_name" "$boot_wait"
+	fi
+	return 0
+}
+
+function _create_vm_no_profiles() {
+	_ensure virsh
+	_ensure virt-xml
+
+	local version="$1"
+	local target="$2"
+
+	local options=('ext4' 'squashfs')
+	local fs
+	fs=$(_interactive_menu \
+		"Select filesystem ${MENU_HELP_BACK}:" "${options[@]}" \
+	)
+	if [ $? -ne 0 ]; then
+		return 1
+	fi
+
+	local target_flat=${target//\//-}
+	local kernel_filename="openwrt-${version}-${target_flat}-vmlinux.elf"
+	local rootfs_filename="openwrt-${version}-${target_flat}-rootfs-${fs}.img.gz"
+
+	local kernel_url rootfs_url
+	kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
+	rootfs_url=$(_get_image_url "$version" "$target" "$rootfs_filename")
+
+	local local_kernel_path="$VADAS_TEMP_DIR/$kernel_filename"
+	local local_rootfs_path="$VADAS_TEMP_DIR/$rootfs_filename"
+
+	_download_image "$kernel_url" "$local_kernel_path"
+	_download_image "$rootfs_url" "$local_rootfs_path"
+
+	local kernel_name
+	kernel_name=$(basename "$local_kernel_path")
+	local rootfs_name
+	rootfs_name=$(basename "$local_rootfs_path" .gz)
+
+	if _confirm_overwrite "$VADAS_IMAGE_DIR/$kernel_name"; then
+		echo "Copying kernel to $VADAS_IMAGE_DIR..."
+		cp "$local_kernel_path" "$VADAS_IMAGE_DIR/$kernel_name"
+	else
+		echo 'Using existing kernel.'
+	fi
+
+	if _confirm_overwrite "$VADAS_IMAGE_DIR/$rootfs_name"; then
+		echo "Unpacking rootfs to $VADAS_IMAGE_DIR..."
+		gunzip -c "$local_rootfs_path" > "$VADAS_IMAGE_DIR/$rootfs_name"
+	else
+		echo 'Using existing rootfs.'
+	fi
+	local vm_name="${rootfs_name%.img}"
+	local arch boot_wait qemu_bin
+
+	case "$target" in
+	malta/be)
+		arch='mips'
+		qemu_bin='/usr/bin/qemu-system-mips'
+		boot_wait=10
+		;;
+	# malta/be64)
+	# 	arch='mips64'
+	# 	qemu_bin='/usr/bin/qemu-system-mips64'
+	# 	boot_wait=10
+	# 	;;
+	malta/le)
+		arch='mipsel'
+		qemu_bin='/usr/bin/qemu-system-mipsel'
+		boot_wait=10
+		;;
+	# malta/le64)
+	# 	arch='mips64el'
+	# 	qemu_bin='/usr/bin/qemu-system-mips64el'
+	# 	boot_wait=10
+	# 	;;
+	esac
+
+	local ip
+	ip=$(_get_next_ip)
+	if [ -z "$ip" ]; then
+		echo 'Error: Failed to find an available IP address for the VM.' >&2
+		return 1
+	fi
+	echo "Allocated IP: $ip"
+
+	local vm_xml
+	vm_xml=$(_render_template "$VADAS_TEMPLATE_DIR/vm_malta.xml" \
+		'VM_CORES'  "$VM_CORES" \
+		'VM_NAME'   "$vm_name" \
+		'ARCH'      "$arch" \
+		'KERNEL'    "$VADAS_IMAGE_DIR/$kernel_name" \
+		'EMULATOR'  "$qemu_bin" \
+		'NET_IP'    "$ip" \
+		'NET_NAME'  "$NET_NAME" \
+		'ROOTFS'    "$VADAS_IMAGE_DIR/$rootfs_name"
+	)
+
+	if _define_vm "$vm_name" "$vm_xml"; then
+		# MIPS-specific as virsh doesn't preserve the slot definition
+		if ! virt-xml "$vm_name" --edit --network address.slot=0x12; then
+			echo 'Error: Failed to update network configuration.' >&2
+			exit 1
+		fi
+
+		cmd_start "$vm_name" --no-connect
+
+		if _confirm "Configure network for '$vm_name'?" y; then
+			sub_cmd_configure_vm "$vm_name" "$boot_wait" "20"
+			boot_wait=0
+		fi
+
+		_connect_to_vm "$vm_name" "$boot_wait"
+	fi
+
+	return 0
+}
+
+function _define_vm() {
+	_ensure virsh
+	_ensure_net "$NET_NAME"
+
+	local vm_name="$1"
+	local vm_xml="$2"
+	local tmp_xml="$VADAS_TEMP_DIR/${vm_name}.xml"
+
+	echo "$vm_xml" > "$tmp_xml"
+	echo "Defining VM '$vm_name'..."
+	virsh define "$tmp_xml"
+	local ret=$?
+	rm -f "$tmp_xml"
+	return $ret
+}
+
+function _download_image() {
+	_ensure curl
+	_ensure sha256sum
+
+	local url="$1"
+	local path="$2"
+	local sha256="$3"
+
+	if [ -f "$path" ]; then
+		if [ -z "$sha256" ]; then
+			echo "File already exists, skipping download: $path"
+			return 0
+		fi
+
+		echo 'Local file found. Verifying checksum...'
+		local local_sha
+		local_sha=$(sha256sum "$path" | awk '{print $1}')
+		if [ "$local_sha" == "$sha256" ]; then
+			echo 'Checksum OK. Skipping download.'
+			return 0
+		fi
+		echo 'Checksum mismatch. Redownloading.'
+	fi
+
+	echo "Downloading image from $url..."
+	if ! curl -L --progress-bar -o "$path" "$url"; then
+		echo 'Error: Download failed.'
+		rm -f "$path"
+		exit 1
+	fi
+
+	if [ -n "$sha256" ] && command -v sha256sum >/dev/null 2>&1; then
+		echo 'Verifying checksum of downloaded file...'
+		local local_sha
+		local_sha=$(sha256sum "$path" | awk '{print $1}')
+		if [ "$local_sha" != "$sha256" ]; then
+			echo 'Error: Checksum of downloaded file is incorrect!'
+			exit 1
+		fi
+		echo 'Download successful and verified.'
+	fi
+}
+
+function _ensure() {
+	local cmd="$1"
+	if ! command -v "$cmd" >/dev/null 2>&1; then
+		echo "Error: '$cmd' command not found."
+		exit 1
+	fi
+}
+
+function _ensure_net() {
+	_ensure virsh
+
+	local name="$1"
+
+	if ! virsh net-info "$name" >/dev/null 2>&1; then
+		echo "Error: Virtual network '$name' does not exist. Please create it first using '$(basename "$0") create network'." >&2
+		exit 1
+	fi
+}
+
+function _fetch_profiles() {
+	_ensure curl
+
+	local version="$1"
+	local target="$2"
+
+	local url
+	url=$(_get_image_url "$version" "$target" "profiles.json")
+	local target_flat=${target//\//-}
+	local profiles_path="$VADAS_TEMP_DIR/openwrt-$version-$target_flat-profiles.json"
+
+	if [ -f "$profiles_path" ]; then
+		_print_msg "Using cached profiles from $profiles_path"
+	else
+		_print_msg "Fetching image profiles from $url..."
+		if ! curl -sf -o "$profiles_path" "$url"; then
+			rm -f "$profiles_path"
+			return 1
+		fi
+		_print_msg "Profiles cached to $profiles_path"
+	fi
+
+	echo "$profiles_path"
+}
+
+function _fetch_releases() {
+	_ensure curl
+	_ensure jq
+
+	echo 'Fetching OpenWrt releases...' >&2
+	local json
+	json=$(curl -s "$OPENWRT_DOWNLOAD_URL/.versions.json")
+	<<< "$json" jq -r '
+		.versions_list[] |
+		select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) |
+		select(split(".")[0] | tonumber >= 23)
+	'
+}
+
+function _format_vms_for_menu() {
+	local vms="$1"
+	vms=$(sort <<< "$vms")
+
+	for vm in $vms; do
+		local state
+		state=$(_get_vm_state "$vm")
+		if [ "$state" == 'running' ]; then
+			echo -e "\e[32m●\e[0m $vm"
+		elif [ "$state" == 'paused' ]; then
+			echo -e "\e[33m●\e[0m $vm"
+		else
+			echo "○ $vm"
+		fi
+	done
+}
+
+function _get_image_url() {
+	local version="$1"
+	local target="$2"
+	local filename="$3"
+	echo "$OPENWRT_DOWNLOAD_URL/releases/$version/targets/$target/$filename"
+}
+
+function _get_next_ip() {
+	_ensure virsh
+	_ensure_net "$NET_NAME"
+
+	local net_xml
+	net_xml=$(virsh net-dumpxml "$NET_NAME")
+
+	local gateway
+	gateway=$(
+		<<< "$net_xml" grep '<ip address=' |
+		sed -n "s/.*address='\([^']*\)'.*/\1/p"
+	)
+
+	local start_ip
+	start_ip=$(
+		<<< "$net_xml" grep '<range start=' |
+		sed -n "s/.*start='\([^']*\)'.*/\1/p"
+	)
+
+	local end_ip
+	end_ip=$(
+		<<< "$net_xml" grep '<range start=' |
+		sed -n "s/.*end='\([^']*\)'.*/\1/p"
+	)
+
+	if [ -z "$start_ip" ] || [ -z "$end_ip" ]; then
+		return 1
+	fi
+
+	local used_ips="$gateway"
+	local vms
+	vms=$(_get_vm_list --all)
+	for vm in $vms; do
+		local ip
+		ip=$(
+			virsh dumpxml "$vm" 2>/dev/null |
+			grep '<vadas:ip>' |
+			sed -n "s/.*<vadas:ip>\([^<]*\).*/\1/p"
+		)
+		if [ -n "$ip" ]; then
+			used_ips="$used_ips $ip"
+		fi
+	done
+
+	local a b c d
+	IFS=. read -r a b c d <<< "$start_ip"
+	local start_int=$((a * 256 ** 3 | b * 256 ** 2 | c * 256 | d))
+
+	IFS=. read -r a b c d <<< "$end_ip"
+	local end_int=$((a * 256 ** 3 | b * 256 ** 2 | c * 256 | d))
+
+	local cur="$start_int"
+	while [ "$cur" -le "$end_int" ]; do
+		local ip_cur=''
+		local val=$cur
+		for _ in {1..4}; do
+			ip_cur=$((val % 256))${ip_cur:+.}$ip_cur
+			val=$((val / 256))
+		done
+
+		if ! <<< "$used_ips" grep -qFw "$ip_cur"; then
+			echo "$ip_cur"
+			return 0
+		fi
+		((cur++))
+	done
+	return 1
+}
+
+function _get_vm_list() {
+	_ensure virsh
+
+	local state_flags
+	IFS=' ' read -r -a state_flags <<< "$@"
+	local vms
+	vms=$(virsh list "${state_flags[@]}" --name | grep .)
+
+	for vm in $vms; do
+		# --xpath filtering doesn't seem to work with namespaces
+		if virsh dumpxml "$vm" 2>/dev/null | grep -q '<vadas:ip>'; then
+			echo "$vm"
+		fi
+	done
+}
+
+function _get_vm_state() {
+	_ensure virsh
+
+	local vm_name="$1"
+	local state
+	state=$(virsh domstate "$vm_name" 2>&1)
+	if [ $? -ne 0 ]; then
+		echo "Error: Unable to get state for '$vm_name'."
+		echo "virsh output: $state"
+		exit 1
+	fi
+	echo "${state/$'\n'/}"
+}
+
+function _interactive_menu() {
+	local prompt="$1"
+	shift
+	local options=("$@")
+	local selected=0
+	local count=${#options[@]}
+	local menu_height=$((MENU_ITEM_LIMIT + 1))
+
+	# Hide cursor
+	stty -echo
+	tput civis >&2
+	trap 'stty echo; tput cnorm >&2; exit' INT TERM
+
+	local first_run=1
+	local last_selected=-1
+
+	while true; do
+		if (( selected != last_selected )); then
+			local start=$((selected - MENU_ITEM_LIMIT / 2))
+			if (( start < 0 )); then start=0; fi
+			if (( count > MENU_ITEM_LIMIT && start > count - MENU_ITEM_LIMIT )); then
+				start=$((count - MENU_ITEM_LIMIT))
+			fi
+
+			# Move cursor up to the start of the menu to overwrite
+			if (( first_run == 0 )); then
+				tput cuu "$menu_height" >&2
+			fi
+
+			# Print prompt
+			tput el >&2
+			echo "$prompt" >&2
+
+			# Print items
+			for (( i=0; i<MENU_ITEM_LIMIT; i++ )); do
+				local idx=$(( start + i ))
+				tput el >&2
+				if (( idx < count )); then
+					if (( idx == selected )); then
+						local clean_item
+						clean_item=$(sed 's/\x1b\[[0-9;]*m//g' <<< "${options[idx]}" )
+						echo -e "\e[1;32m> ${clean_item}\e[0m" >&2
+					else
+						echo "  ${options[idx]}" >&2
+					fi
+				else
+					echo '' >&2
+				fi
+			done
+			last_selected=$selected
+			first_run=0
+		fi
+
+		# Read keyboard input. Arrow keys are sent as escape sequences. Read one
+		# byte, and if it's an escape char, try to read the rest of the sequence
+		# with a very short timeout.
+		read -rsn1 key
+		if [[ $key == $'\x1b' ]]; then
+			read -rsn5 -t 0.01 rest
+			key+="$rest"
+		fi
+
+		case "$key" in
+			$'\x1b[A')  ((selected--)) ;;                   # Up arrow
+			$'\x1b[B')  ((selected++)) ;;                   # Down arrow
+			$'\x1b[5~') ((selected -= MENU_ITEM_LIMIT)) ;;  # Page Up
+			$'\x1b[6~') ((selected += MENU_ITEM_LIMIT)) ;;  # Page Down
+			$'\x1b')                                        # Escape key
+				tput cuu "$menu_height" >&2
+				tput ed >&2
+				stty echo
+				tput cnorm >&2
+				trap - INT TERM
+				return 1 ;;
+			'') break ;;                                    # Enter key
+		esac
+
+		if (( selected < 0 )); then selected=0;
+		elif (( selected >= count )); then selected=$((count - 1)); fi
+	done
+
+	# Clear the menu area completely on exit
+	tput cuu "$menu_height" >&2
+	tput ed >&2
+
+	stty echo
+	tput cnorm >&2
+	trap - INT TERM # Clear the trap
+
+	echo "${options[selected]}"
+}
+
+function _print_msg() {
+	echo "$1" >&2
+	((lines_printed++))
+}
+
+function _read_octet() {
+	local prompt="$1"
+	local min="$2"
+	local max="$3"
+	local octet
+	while true; do
+		read -r -p "$prompt (range: $min-$max) [default: $min]: " octet
+		if [[ -z "$octet" ]]; then
+			octet="$min"
+		fi
+		if [[ "$octet" =~ ^[0-9]+$ ]] && (( octet >= min && octet <= max )); then
+			echo "$octet"
+			return 0
+		else
+			echo "Invalid input. Please enter a number between $min and $max." >&2
+		fi
+	done
+}
+
+function _render_template() {
+	local template="$1"
+	shift
+	if [ ! -f "$template" ]; then
+		echo "Error: Template '$template' not found." >&2
+		exit 1
+	fi
+	local content
+	content=$(cat "$template")
+	while [ "$#" -gt 0 ]; do
+		local key="$1"
+		local val="$2"
+		content="${content//\{\{$key\}\}/$val}"
+		shift 2
+	done
+	echo "$content"
+}
+
+function _select_vm() {
+	local state_flags
+	IFS=' ' read -r -a state_flags <<< "$@"
+
+	local vms
+	vms=$(_get_vm_list "${state_flags[@]}")
+	if [ -z "$vms" ]; then
+		echo 'No VMs with matching state found.' >&2
+		return 1
+	fi
+
+	local options=()
+	while IFS= read -r line; do
+		options+=("$line")
+	done < <(_format_vms_for_menu "$vms")
+
+	local selected_vm
+	selected_vm=$(_interactive_menu \
+		"Select a VM ${MENU_HELP_EXIT}:" \
+		"${options[@]}" \
+	)
+	if [ $? -ne 0 ]; then
+		return 1
+	fi
+
+	_clean_vm_name "$selected_vm"
+}
+
+function cmd_clean() {
+	local sub_command="$1"
+	case "$sub_command" in
+	--help|-h)
+		_print_help clean
+		exit 0
+		;;
+	images)
+		sub_cmd_clean_images
+		;;
+	temp)
+		sub_cmd_clean_temp
+		;;
+	*)
+		_print_help clean
+		exit 1
+		;;
+	esac
+}
+
+function cmd_configure() {
+	local sub_command="$1"
+	case "$sub_command" in
+	--help|-h)
+		_print_help configure
+		exit 0
+		;;
+	vm)
+		shift
+		sub_cmd_configure_vm "$@"
+		;;
+	*)
+		_print_help configure
+		exit 1
+		;;
+	esac
+}
+
+function cmd_create() {
+	local sub_command="$1"
+	case "$sub_command" in
+	--help|-h)
+		_print_help create
+		exit 0
+		;;
+	network)
+		sub_cmd_create_network
+		;;
+	vm)
+		sub_cmd_create_vm
+		;;
+	*)
+		_print_help create
+		exit 1
+		;;
+	esac
+}
+
+function cmd_env() {
+	local sub_command="$1"
+	case "$sub_command" in
+	--help|-h)
+		_print_help env
+		exit 0
+		;;
+	esac
+
+	cat <<-EOF
+		VADAS_CONFIG_DIR=$VADAS_CONFIG_DIR
+		VADAS_IMAGE_DIR=$VADAS_IMAGE_DIR
+		VADAS_TEMPLATE_DIR=$VADAS_TEMPLATE_DIR
+		VADAS_TEMP_DIR=$VADAS_TEMP_DIR
+	EOF
+}
+
+function cmd_list() {
+	local sub_command="$1"
+	case "$sub_command" in
+	--help|-h)
+		_print_help list
+		exit 0
+		;;
+	vm)
+		cmd_ps --list
+		;;
+	*)
+		_print_help list
+		exit 1
+		;;
+	esac
+}
+
+function cmd_pause() {
+	_ensure virsh
+
+	local vm_name
+	vm_name="$1"
+
+	case "$vm_name" in
+	--help|-h)
+		_print_help pause
+		exit 0
+		;;
+	esac
+
+	if [ -z "$vm_name" ]; then
+		vm_name=$(_select_vm --state-running)
+		[ $? -ne 0 ] && exit 0
+	fi
+
+	local state
+	state=$(_get_vm_state "$vm_name")
+	if [ "$state" != 'running' ]; then
+		exit 0
+	fi
+
+	if ! virsh suspend "$vm_name"; then
+		echo "Failed to pause '$vm_name'."
+		exit 1
+	fi
+}
+
+function cmd_ps() {
+	_ensure virsh
+
+	local arg="$1"
+	case "$arg" in
+	--help|-h)
+		_print_help ps
+		exit 0
+		;;
+	--list) arg='--all' ;;
+	--all)  arg='--state-running --state-paused' ;;
+	*)      arg='--state-running' ;;
+	esac
+
+	local vms
+	vms=$(_get_vm_list "$arg")
+	[ -z "$vms" ] && return 0
+	_format_vms_for_menu "$vms"
+}
+
+function cmd_remove() {
+	local sub_command="$1"
+	local arg="$2"
+	case "$sub_command" in
+	--help|-h)
+		_print_help remove
+		exit 0
+		;;
+	image)
+		sub_cmd_remove_image "$arg"
+		;;
+	network)
+		sub_cmd_remove_network
+		;;
+	vm)
+		sub_cmd_remove_vm "$arg"
+		;;
+	*)
+		_print_help remove
+		exit 1
+		;;
+	esac
+}
+
+function cmd_resume() {
+	_ensure virsh
+
+	local vm_name
+	vm_name="$1"
+	case "$vm_name" in
+	--help|-h)
+		_print_help resume
+		exit 0
+		;;
+	esac
+
+	if [ -z "$vm_name" ]; then
+		vm_name=$(_select_vm --state-paused)
+		[ $? -ne 0 ] && exit 0
+	fi
+
+	local state
+	state=$(_get_vm_state "$vm_name")
+	if [ "$state" != 'paused' ]; then
+		exit 1
+	fi
+
+	if ! virsh resume "$vm_name"; then
+		echo "Failed to resume '$vm_name'."
+		exit 1
+	fi
+
+	_connect_to_vm "$vm_name"
+}
+
+function cmd_show() {
+	local sub_command="$1"
+	case "$sub_command" in
+	--help|-h)
+		_print_help show
+		exit 0
+		;;
+	ip)
+		shift
+		sub_cmd_show_ip "$@"
+		;;
+	*)
+		_print_help show
+		exit 1
+		;;
+	esac
+}
+
+function cmd_start() {
+	_ensure virsh
+
+	local vm_name
+	local connect=1
+
+	for arg in "$@"; do
+		case "$arg" in
+		--help|-h)
+			_print_help start
+			exit 0
+			;;
+		--no-connect)
+			connect=0
+			;;
+		*)
+			if [ -z "$vm_name" ]; then
+				vm_name="$arg"
+			fi
+			;;
+		esac
+	done
+
+	if [ -z "$vm_name" ]; then
+		vm_name=$(_select_vm --all)
+		[ $? -ne 0 ] && exit 0
+	fi
+
+	local state
+	state=$(_get_vm_state "$vm_name")
+	local cmd
+	case "$state" in
+	paused)
+		cmd=resume
+		;;
+	'shut off')
+		cmd=start
+		;;
+	*)
+		;;
+	esac
+
+	if [ -n "$cmd" ] && ! virsh "$cmd" "$vm_name"; then
+		echo "Failed to $cmd '$vm_name'."
+		exit 1
+	fi
+
+	if [ "$connect" -eq 1 ]; then
+		_connect_to_vm "$vm_name"
+	fi
+}
+
+function cmd_stop() {
+	_ensure virsh
+
+	local vm_name
+	local force=0
+
+	for arg in "$@"; do
+		case "$arg" in
+		--help|-h)
+			_print_help stop
+			exit 0
+			;;
+		--force)
+			force=1
+			;;
+		*)
+			if [ -z "$vm_name" ]; then
+				vm_name="$arg"
+			fi
+			;;
+		esac
+	done
+
+	if [ -z "$vm_name" ]; then
+		vm_name=$(_select_vm --state-running --state-paused)
+		[ $? -ne 0 ] && exit 0
+	fi
+
+	local state
+	state=$(_get_vm_state "$vm_name")
+	if [ "$state" = 'running' ]; then
+		if (( force == 1 )); then
+			echo "Force stopping VM '$vm_name'..."
+			virsh destroy "$vm_name"
+		else
+			echo "Shutting down VM '$vm_name'..."
+			virsh shutdown "$vm_name"
+		fi
+	else
+		echo "'$vm_name' is not running."
+	fi
+}
+
+function sub_cmd_clean_images() {
+	_ensure virsh
+
+	local used_images
+	used_images=$(
+		virsh list --all --name |
+		while read -r vm; do
+			virsh dumpxml "$vm" 2>/dev/null |
+			sed -n \
+				-e "s/.*file='\([^']*\)'.*/\1/p" \
+				-e "s/.*<kernel[^>]*>\([^<]*\)<\/kernel>.*/\1/p" \
+				-e "s/.*<initrd[^>]*>\([^<]*\)<\/initrd>.*/\1/p" \
+				-e "s/.*<nvram[^>]*>\([^<]*\)<\/nvram>.*/\1/p" \
+				-e "s/.*<loader[^>]*>\([^<]*\)<\/loader>.*/\1/p"
+		done | sort | uniq
+	)
+
+	local all_images
+	all_images=$(ls -1 "$VADAS_IMAGE_DIR"/* 2>/dev/null)
+
+	local unused_images=()
+	for img in $all_images; do
+		if ! grep -qF "$img" <<< "$used_images"; then
+			unused_images+=("$img")
+		fi
+	done
+
+	if [ ${#unused_images[@]} -eq 0 ]; then
+		echo 'No unused images found.'
+		return 0
+	fi
+
+	echo 'The following images are not used by any VM:'
+	for img in "${unused_images[@]}"; do
+		echo "- $(basename "$img")"
+	done
+
+	if _confirm 'Are you sure you want to remove these images?'; then
+		for img in "${unused_images[@]}"; do
+			echo "Removing '$img'..."
+			rm -f "$img"
+		done
+	fi
+}
+
+function sub_cmd_clean_temp() {
+	if [ -d "$VADAS_TEMP_DIR" ]; then
+		if _confirm "Are you sure you want to remove all files in '$VADAS_TEMP_DIR'?"; then
+			echo "Cleaning up '$VADAS_TEMP_DIR'..."
+			rm -rf "${VADAS_TEMP_DIR:?}"/*
+		fi
+	else
+		echo "Temporary directory '$VADAS_TEMP_DIR' does not exist."
+	fi
+}
+
+function sub_cmd_configure_vm() {
+	_ensure expect
+	_ensure virsh
+	_ensure_net "$NET_NAME"
+
+	local vm_name="$1"
+	local boot_wait="${2:-0}"
+	local sleep_time="${3:-0.5}"
+	if [ -z "$vm_name" ]; then
+		vm_name=$(_select_vm --all)
+		[ $? -ne 0 ] && exit 0
+	fi
+
+	local state
+	state=$(_get_vm_state "$vm_name")
+	if [ "$state" != "running" ]; then
+		echo "Error: VM '$vm_name' is not running. Please start it first." >&2
+		exit 1
+	fi
+
+	local net_xml
+	net_xml=$(virsh net-dumpxml "$NET_NAME")
+
+	local gateway
+	gateway=$(
+		<<< "$net_xml" grep '<ip address=' |
+		sed -n "s/.*address='\([^']*\)'.*/\1/p"
+	)
+
+	local netmask
+	netmask=$(
+		<<< "$net_xml" grep '<ip address=' |
+		sed -n "s/.*netmask='\([^']*\)'.*/\1/p"
+	)
+
+	if [ -z "$gateway" ]; then
+		echo "Error: Could not parse network configuration for '$NET_NAME'." >&2
+		exit 1
+	fi
+
+	local vm_ip
+	vm_ip=$(
+		virsh dumpxml "$vm_name" 2>/dev/null |
+		grep '<vadas:ip>' |
+		sed -n "s/.*<vadas:ip>\([^<]*\).*/\1/p"
+	)
+
+	if [ -z "$vm_ip" ]; then
+		echo "Error: VM '$vm_name' does not have an assigned IP in metadata." >&2
+		exit 1
+	fi
+
+	if [ "$boot_wait" -ne 0 ]; then
+		_countdown "$boot_wait" 'Waiting for VM to boot before configuring...'
+	fi
+
+	local cmds
+	cmds=$(cat <<-EOF
+	uci set network.lan=interface
+	uci set network.lan.device='br-lan'
+	uci set network.lan.proto='static'
+	uci set network.lan.ipaddr='$vm_ip'
+	uci set network.lan.netmask='${netmask:-255.255.255.0}'
+	uci set network.lan.ip6assign='60'
+	uci add_list network.lan.dns='$gateway'
+
+	uci add network route
+	uci set network.@route[-1].interface='lan'
+	uci set network.@route[-1].target='0.0.0.0/0'
+	uci set network.@route[-1].gateway='$gateway'
+
+	uci commit network
+	service network restart
+	EOF
+	)
+
+	expect <<-EOF
+	set cmds {$cmds}
+
+	set timeout 30
+	spawn virsh console $vm_name
+
+	expect {
+		"Connected to domain" { exp_continue }
+		"Escape character is" {
+			sleep 0.5
+			send "\r"
+		}
+		timeout { exit 1 }
+	}
+
+	sleep $sleep_time
+	send "\r"
+
+	expect {
+		-re "root@.*#" {}
+		timeout { exit 1 }
+	}
+
+	foreach line [split \$cmds "\n"] {
+		if {\$line ne ""} {
+			send "\$line\r"
+			sleep 0.1
+		}
+	}
+
+	expect "br-lan: port 1(eth1) entered forwarding state"
+
+	sleep 0.5
+	send "\x1d"
+	expect eof
+	EOF
+}
+
+function sub_cmd_create_network() {
+	_ensure ip
+	_ensure virsh
+
+	if virsh net-info "$NET_NAME" >/dev/null 2>&1; then
+		echo "Error: Network '$NET_NAME' already exists."
+		exit 1
+	fi
+
+	while true; do
+		local interfaces
+		interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | sort)
+
+		if [ -z "$interfaces" ]; then
+			echo 'Error: No network interfaces found.'
+			exit 1
+		fi
+
+		local options
+		readarray -t options <<< "$interfaces"
+
+		local selected_iface
+		selected_iface=$(_interactive_menu \
+			"Select an interface ${MENU_HELP_EXIT}:" "${options[@]}" \
+		)
+		[ $? -ne 0 ] && exit 0
+		echo "Selected interface: $selected_iface"
+
+		while true; do
+			local selected_range
+			selected_range=$(_interactive_menu \
+				"Select a network range ${MENU_HELP_BACK}:" \
+				"${NET_RANGES[@]}" \
+			)
+			if [ $? -ne 0 ]; then
+				tput cuu1
+				tput el
+				break # go back to interface selection
+			fi
+			echo "Selected range: $selected_range"
+
+			local ip_addr octet2 octet3
+			case "$selected_range" in
+			'10.0.0.0/8')
+				octet2=$(_read_octet 'Enter second octet' 0 254)
+				octet3=$(_read_octet 'Enter third octet' 0 254)
+				ip_addr="10.$octet2.$octet3.1"
+				;;
+			'172.16.0.0/12')
+				octet2=$(_read_octet 'Enter second octet' 16 31)
+				octet3=$(_read_octet 'Enter third octet' 0 254)
+				ip_addr="172.$octet2.$octet3.1"
+				;;
+			'192.168.0.0/16')
+				octet3=$(_read_octet 'Enter third octet' 0 254)
+				ip_addr="192.168.$octet3.1"
+				;;
+			esac
+
+			echo "Virtual gateway IP: $ip_addr"
+			echo "Virtual gateway netmask: $NET_MASK"
+
+			local ip_base="${ip_addr%.*}"
+			local net_xml
+			net_xml=$(_render_template "$VADAS_TEMPLATE_DIR/network.xml" \
+				'NET_NAME'   "$NET_NAME" \
+				'INTERFACE'  "$selected_iface" \
+				'IP_ADDR'    "$ip_addr" \
+				'IP_START'   "${ip_base}.2" \
+				'IP_END'     "${ip_base}.254" \
+				'NET_MASK'   "$NET_MASK"
+			)
+			local tmp_xml="$VADAS_TEMP_DIR/$NET_NAME.xml"
+			mkdir -p "$VADAS_TEMP_DIR"
+			echo "$net_xml" > "$tmp_xml"
+			virsh net-define "$tmp_xml"
+			virsh net-start "$NET_NAME"
+			virsh net-autostart "$NET_NAME"
+			rm -f "$tmp_xml"
+
+			return 0
+		done
+	done
+}
+
+function sub_cmd_create_vm() {
+	_ensure curl
+	_ensure gunzip
+	_ensure jq
+	_ensure sha256sum
+	_ensure virsh
+	_ensure virt-xml
+
+	_ensure_net "$NET_NAME"
+
+	mkdir -p "$VADAS_IMAGE_DIR"
+	mkdir -p "$VADAS_TEMP_DIR"
+
+	readarray -t releases < <(_fetch_releases)
+
+	if [ "${#releases[@]}" -eq 0 ]; then
+		echo 'Error: No releases found.'
+		exit 1
+	fi
+
+	while true; do
+		local version
+		version=$(_interactive_menu \
+			"Select a release ${MENU_HELP_EXIT}:" "${releases[@]}" \
+		)
+		[ $? -ne 0 ] && exit 0
+		echo "Selected release: $version"
+
+		local target_list=("${TARGETS[@]}")
+
+		local major_ver="${version%%.*}"
+		if (( major_ver <= 23 )); then
+			local filtered_targets=()
+			for t in "${target_list[@]}"; do
+				if [[ "$t" == malta/* && "$t" != 'malta/be' ]]; then
+					continue
+				fi
+				filtered_targets+=("$t")
+			done
+			target_list=("${filtered_targets[@]}")
+		fi
+
+		while true; do
+			local target
+			target=$(_interactive_menu \
+				"Select a target ${MENU_HELP_BACK}:" "${target_list[@]}" \
+			)
+			if [ $? -ne 0 ]; then
+				tput cuu1
+				tput el
+				break
+			fi
+			local lines_printed=0
+			_print_msg "Selected target: $target"
+
+			local create
+			if [[ "$target" == malta/* ]]; then
+				create=_create_vm_no_profiles
+			else
+				create=_create_vm_generic
+			fi
+
+			if ! "$create" "$version" "$target"; then
+				tput cuu "$lines_printed"
+				tput ed
+				continue
+			fi
+			return 0
+		done
+	done
+}
+
+function sub_cmd_remove_image() {
+	local image_name="$1"
+
+	if [ -z "$image_name" ]; then
+		local images
+		images=$(ls -1 "$VADAS_IMAGE_DIR" 2>/dev/null)
+		if [ -z "$images" ]; then
+			echo "No images found in $VADAS_IMAGE_DIR."
+			exit 1
+		fi
+
+		local options
+		readarray -t options <<< "$images"
+
+		image_name=$(_interactive_menu \
+			"Select an image to remove ${MENU_HELP_EXIT}:" "${options[@]}" \
+		)
+		[ $? -ne 0 ] && exit 0
+	fi
+
+	local image_path="$VADAS_IMAGE_DIR/$image_name"
+	if _confirm "Are you sure you want to remove image '$image_name'?"; then
+		echo "Removing image '$image_path'..."
+		rm -f "$image_path"
+	fi
+}
+
+function sub_cmd_remove_network() {
+	_ensure virsh
+
+	if ! virsh net-info "$NET_NAME" >/dev/null 2>&1; then
+		echo "Network '$NET_NAME' not found."
+		return 0
+	fi
+
+	local dependent_vms=''
+	local vms
+	# filter out empty lines
+	vms=$(virsh list --all --name | grep .)
+	for vm in $vms; do
+		if virsh dumpxml "$vm" 2>/dev/null | grep -q "source network=['\"]${NET_NAME}['\"]"; then
+			dependent_vms="$dependent_vms $vm"
+		fi
+	done
+
+	if [ -n "$dependent_vms" ]; then
+		echo "Error: The following VMs are using network '$NET_NAME':"
+		for vm in $dependent_vms; do
+			echo "- $vm"
+		done
+		echo 'Please remove them before removing the network.'
+		exit 1
+	fi
+
+	if _confirm "Are you sure you want to remove network '$NET_NAME'?"; then
+		echo "Removing network '$NET_NAME'..."
+		virsh net-destroy "$NET_NAME"
+		virsh net-undefine "$NET_NAME"
+	fi
+}
+
+function sub_cmd_remove_vm() {
+	_ensure virsh
+
+	local vm_name="$1"
+
+	if [ -z "$vm_name" ]; then
+		vm_name=$(_select_vm --all)
+		[ $? -ne 0 ] && exit 0
+	fi
+
+	if [ "$(_get_vm_state "$vm_name")" == 'running' ]; then
+		echo "WARNING: VM '$vm_name' is running!"
+		if ! _confirm 'Are you sure you want to force stop and remove it?'; then
+			return 0
+		fi
+		echo "Stopping VM '$vm_name'..."
+		virsh destroy "$vm_name"
+	elif ! _confirm "Are you sure you want to remove VM '$vm_name'?"; then
+		return 0
+	fi
+
+	echo "Removing VM '$vm_name'..."
+	virsh undefine "$vm_name" --nvram --remove-all-storage
+}
+
+function sub_cmd_show_ip() {
+	_ensure virsh
+
+	local vm_name="$1"
+	if [ -z "$vm_name" ]; then
+		vm_name=$(_select_vm --all)
+		[ $? -ne 0 ] && exit 0
+	fi
+
+	local vm_ip
+	vm_ip=$(
+		virsh dumpxml "$vm_name" 2>/dev/null |
+		grep '<vadas:ip>' |
+		sed -n "s/.*<vadas:ip>\([^<]*\).*/\1/p"
+	)
+
+	if [ -n "$vm_ip" ]; then
+		echo "$vm_ip"
+	else
+		echo "Error: No IP found in metadata for '$vm_name'." >&2
+		exit 1
+	fi
+}
+
+case "${1:-}" in
+clean)           cmd_clean "$2" ;;
+configure)       cmd_configure "${@:2}" ;;
+create)          cmd_create "$2" ;;
+env)             cmd_env "$2" ;;
+list)            cmd_list "$2" ;;
+pause|suspend)   cmd_pause "${@:2}" ;;
+ps)              cmd_ps "$2" ;;
+remove|rm)       cmd_remove "$2" "$3" ;;
+resume)          cmd_resume "${@:2}" ;;
+show)            cmd_show "${@:2}" ;;
+start)           cmd_start "${@:2}" ;;
+stop|kill)       cmd_stop "${@:2}" ;;
+--help|-h)       _print_help ;;
+*)               _print_help; exit 1 ;;
+esac
