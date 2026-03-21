@@ -34,12 +34,29 @@ _vadas_sh_completion() {
 	COMPREPLY=()
 	cur="${COMP_WORDS[COMP_CWORD]}"
 	prev="${COMP_WORDS[COMP_CWORD-1]}"
-	opts='clean configure create env kill list pause ps remove rm resume show start stop suspend'
+	opts='
+		clean
+		configure
+		create
+		env
+		images
+		kill
+		list
+		pause
+		ps
+		remove
+		rm
+		resume
+		show
+		start
+		stop
+		suspend
+	'
 	local help_opts='--help -h'
 	local clean_opts='images temp'
 	local configure_opts='vm'
 	local create_opts='network vm'
-	local list_opts='vm'
+	local list_opts='images vm'
 	local ps_opts='--all'
 	local remove_opts='image network vm'
 	local show_opts='ip'

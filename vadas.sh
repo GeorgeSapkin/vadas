@@ -33,6 +33,9 @@ readonly NET_RANGES=('10.0.0.0/8' '172.16.0.0/12' '192.168.0.0/16')
 readonly VM_CORES=2
 readonly VM_RAM=524288
 
+readonly ICON_ON='●'
+readonly ICON_OFF='○'
+
 function _print_help() {
 	local cmd="$1"
 
@@ -77,6 +80,7 @@ function _print_help() {
 		<subcommand>
 
 		Subcommands:
+		  images          List all image files
 		  vm              List all created VMs
 		EOF
 		;;
@@ -129,8 +133,8 @@ function _print_help() {
 		  create          Create resources (e.g., 'vm')
 		  configure       Configure a resource (e.g., 'vm')
 		  remove|rm       Remove resources (e.g., 'network')
-		  clean           Clean up resources (e.g., 'temp')
 		  list            List resources (e.g., 'vm')
+		  clean           Clean up resources (e.g., 'temp')
 
 		Resource management:
 		  start           Start a VM and connect to it
@@ -151,7 +155,7 @@ function _print_help() {
 function _clean_vm_name() {
 	# Strip ANSI color codes and status prefix from the selection to get the raw
 	# VM name
-	<<< "$1" sed -e 's/\x1b\[[0-9;]*m//g' -e 's/^[●○] //'
+	<<< "$1" sed -e 's/\x1b\[[0-9;]*m//g' -e "s/^[${ICON_ON}${ICON_OFF}] //"
 }
 
 function _confirm() {
@@ -619,11 +623,11 @@ function _format_vms_for_menu() {
 		local state
 		state=$(_get_vm_state "$vm")
 		if [ "$state" == 'running' ]; then
-			echo -e "\e[32m●\e[0m $vm"
+			echo -e "\e[32m${ICON_ON}\e[0m $vm"
 		elif [ "$state" == 'paused' ]; then
-			echo -e "\e[33m●\e[0m $vm"
+			echo -e "\e[33m${ICON_ON}\e[0m $vm"
 		else
-			echo "○ $vm"
+			echo "$ICON_OFF $vm"
 		fi
 	done
 }
@@ -995,7 +999,7 @@ function cmd_clean() {
 		_print_help clean
 		exit 0
 		;;
-	images)
+	image|images)
 		sub_cmd_clean_images
 		;;
 	temp)
@@ -1070,7 +1074,10 @@ function cmd_list() {
 		_print_help list
 		exit 0
 		;;
-	vm)
+	image|images)
+		sub_cmd_list_images
+		;;
+	vm|vms)
 		cmd_ps --list
 		;;
 	*)
@@ -1319,12 +1326,12 @@ function sub_cmd_clean_images() {
 		return 0
 	fi
 
-	echo 'The following images are not used by any VM:'
+	echo 'The following images are not used by any VM:'$'\n'
 	for img in "${unused_images[@]}"; do
-		echo "- $(basename "$img")"
+		echo "$ICON_OFF $(basename "$img")"
 	done
 
-	if _confirm 'Are you sure you want to remove these images?'; then
+	if _confirm $'\n''Are you sure you want to remove these images?'; then
 		for img in "${unused_images[@]}"; do
 			echo "Removing '$img'..."
 			rm -f "$img"
@@ -1614,6 +1621,27 @@ function sub_cmd_create_vm() {
 	done
 }
 
+function sub_cmd_list_images() {
+	local used_images
+	used_images=$(_get_used_images)
+
+	local all_images
+	all_images=$(ls -1 "$VADAS_IMAGE_DIR" 2>/dev/null)
+
+	if [ -z "$all_images" ]; then
+		echo "No images found in $VADAS_IMAGE_DIR."
+		return 0
+	fi
+
+	for img in $all_images; do
+		if grep -qF "$img" <<< "$used_images"; then
+			echo -e "\e[32m${ICON_ON}\e[0m $(basename "$img")"
+		else
+			echo "$ICON_OFF $(basename "$img")"
+		fi
+	done
+}
+
 function sub_cmd_remove_image() {
 	local image_name="$1"
 
@@ -1729,6 +1757,7 @@ clean)           cmd_clean "$2" ;;
 configure)       cmd_configure "${@:2}" ;;
 create)          cmd_create "$2" ;;
 env)             cmd_env "$2" ;;
+images)          sub_cmd_list_images ;;
 list)            cmd_list "$2" ;;
 pause|suspend)   cmd_pause "${@:2}" ;;
 ps)              cmd_ps "$2" ;;

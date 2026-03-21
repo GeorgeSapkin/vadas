@@ -59,6 +59,7 @@ When no arguments are supplied, most commands are interactive.
 - **create vm**: Interactively download an OpenWrt image and create a new VM.
 - **configure vm [<vm_name>]**: Automatically configure the network for a
   running VM via its console.
+- **list images**: List all downloaded disk images.
 - **list vm**: List all VMs managed by `vadas`.
 - **ps [--all]**: List running VMs. `--all` includes paused VMs.
 - **show ip [<vm_name>]**: Show the IP address of a VM.
