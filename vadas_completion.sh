@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright (c) 2025 George Sapkin
+# Copyright (c) 2025-2026 George Sapkin
 #
 # SPDX-License-Identifier: GPL-2.0-only
 

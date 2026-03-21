@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright (c) 2025 George Sapkin
+# Copyright (c) 2025-2026 George Sapkin
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
@@ -284,8 +284,12 @@ function _create_vm_generic() {
 	file_url=$(_get_image_url "$version" "$target" "$filename")
 	_download_image "$file_url" "$local_path" "$sha256"
 
+	local used_images
+	used_images=$(_get_used_images)
+
 	local image_name
 	image_name=$(basename "$local_path" .gz)
+	image_name=$(_get_available_image_name "$image_name" "$used_images")
 	if _confirm_overwrite "$VADAS_IMAGE_DIR/$image_name"; then
 		echo "Unpacking image to $VADAS_IMAGE_DIR..."
 		gunzip -c "$local_path" > "$VADAS_IMAGE_DIR/$image_name"
@@ -294,6 +298,7 @@ function _create_vm_generic() {
 	fi
 
 	local vm_name="${image_name%.img}"
+	vm_name=$(_get_unique_vm_name "$vm_name")
 	local arch boot_wait cfg_sleep loader machine nvram_file nvram_template \
 		qemu_bin template
 
@@ -400,11 +405,12 @@ function _create_vm_no_profiles() {
 	_download_image "$kernel_url" "$local_kernel_path"
 	_download_image "$rootfs_url" "$local_rootfs_path"
 
+	local used_images
+	used_images=$(_get_used_images)
+
 	local kernel_name
 	kernel_name=$(basename "$local_kernel_path")
-	local rootfs_name
-	rootfs_name=$(basename "$local_rootfs_path" .gz)
-
+	kernel_name=$(_get_available_image_name "$kernel_name" "$used_images")
 	if _confirm_overwrite "$VADAS_IMAGE_DIR/$kernel_name"; then
 		echo "Copying kernel to $VADAS_IMAGE_DIR..."
 		cp "$local_kernel_path" "$VADAS_IMAGE_DIR/$kernel_name"
@@ -412,6 +418,9 @@ function _create_vm_no_profiles() {
 		echo 'Using existing kernel.'
 	fi
 
+	local rootfs_name
+	rootfs_name=$(basename "$local_rootfs_path" .gz)
+	rootfs_name=$(_get_available_image_name "$rootfs_name" "$used_images")
 	if _confirm_overwrite "$VADAS_IMAGE_DIR/$rootfs_name"; then
 		echo "Unpacking rootfs to $VADAS_IMAGE_DIR..."
 		gunzip -c "$local_rootfs_path" > "$VADAS_IMAGE_DIR/$rootfs_name"
@@ -419,6 +428,7 @@ function _create_vm_no_profiles() {
 		echo 'Using existing rootfs.'
 	fi
 	local vm_name="${rootfs_name%.img}"
+	vm_name=$(_get_unique_vm_name "$vm_name")
 	local arch boot_wait qemu_bin
 
 	case "$target" in
@@ -618,6 +628,28 @@ function _format_vms_for_menu() {
 	done
 }
 
+function _get_available_image_name() {
+	local name="$1"
+	local used_images="$2"
+	local ext="${name##*.}"
+	local base="${name%.*}"
+	local suffix=1
+
+	local candidate="$name"
+	while true; do
+		local path="$VADAS_IMAGE_DIR/$candidate"
+		if [ -f "$path" ]; then
+			if grep -Fqx "$path" <<< "$used_images"; then
+				candidate="${base}-${suffix}.${ext}"
+				((suffix++))
+				continue
+			fi
+		fi
+		echo "$candidate"
+		return 0
+	done
+}
+
 function _get_image_url() {
 	local version="$1"
 	local target="$2"
@@ -692,6 +724,76 @@ function _get_next_ip() {
 		((cur++))
 	done
 	return 1
+}
+
+function _get_used_images() {
+	_ensure virsh
+
+	virsh list --all --name |
+	while read -r vm; do
+		virsh dumpxml "$vm" 2>/dev/null |
+		sed -n \
+			-e "s/.*file='\([^']*\)'.*/\1/p" \
+			-e "s/.*<kernel[^>]*>\([^<]*\)<\/kernel>.*/\1/p" \
+			-e "s/.*<initrd[^>]*>\([^<]*\)<\/initrd>.*/\1/p" \
+			-e "s/.*<nvram[^>]*>\([^<]*\)<\/nvram>.*/\1/p" \
+			-e "s/.*<loader[^>]*>\([^<]*\)<\/loader>.*/\1/p"
+	done | sort | uniq
+}
+
+function _get_unique_vm_name() {
+	local name="$1"
+	local existing_vms
+	existing_vms=$(virsh list --all --name)
+
+	local candidate="$name"
+	local base="$name"
+	local counter=1
+	if [[ "$name" =~ ^(.*)-([0-9]+)$ ]]; then
+		base="${BASH_REMATCH[1]}"
+		counter="${BASH_REMATCH[2]}"
+	fi
+
+	while grep -qFx "$candidate" <<< "$existing_vms"; do
+		if [[ "$candidate" == "$base" ]]; then
+			candidate="${base}-${counter}"
+		else
+			((counter++))
+			candidate="${base}-${counter}"
+		fi
+	done
+
+	local new_name
+	while true; do
+		read -r -e -p 'VM name (allowed: alphanumeric, dot, dash): ' -i "$candidate" new_name >&2
+		if [ -z "$new_name" ]; then
+			echo 'Error: Name cannot be empty.' >&2
+			continue
+		fi
+		if [[ ! "$new_name" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+			echo 'Error: Name must contain only alphanumeric characters, dots, and dashes.' >&2
+			continue
+		fi
+		if grep -qFx "$new_name" <<< "$existing_vms"; then
+			echo "Error: VM '$new_name' already exists." >&2
+			base="$new_name"
+			counter=1
+			if [[ "$new_name" =~ ^(.*)-([0-9]+)$ ]]; then
+				base="${BASH_REMATCH[1]}"
+				counter="${BASH_REMATCH[2]}"
+			fi
+			candidate="$new_name"
+			while grep -qFx "$candidate" <<< "$existing_vms"; do
+				if [[ "$candidate" != "$base" ]]; then
+					((counter++))
+				fi
+				candidate="${base}-${counter}"
+			done
+			continue
+		fi
+		echo "$new_name"
+		return 0
+	done
 }
 
 function _get_vm_list() {
@@ -1200,18 +1302,7 @@ function sub_cmd_clean_images() {
 	_ensure virsh
 
 	local used_images
-	used_images=$(
-		virsh list --all --name |
-		while read -r vm; do
-			virsh dumpxml "$vm" 2>/dev/null |
-			sed -n \
-				-e "s/.*file='\([^']*\)'.*/\1/p" \
-				-e "s/.*<kernel[^>]*>\([^<]*\)<\/kernel>.*/\1/p" \
-				-e "s/.*<initrd[^>]*>\([^<]*\)<\/initrd>.*/\1/p" \
-				-e "s/.*<nvram[^>]*>\([^<]*\)<\/nvram>.*/\1/p" \
-				-e "s/.*<loader[^>]*>\([^<]*\)<\/loader>.*/\1/p"
-		done | sort | uniq
-	)
+	used_images=$(_get_used_images)
 
 	local all_images
 	all_images=$(ls -1 "$VADAS_IMAGE_DIR"/* 2>/dev/null)
