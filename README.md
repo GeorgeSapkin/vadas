@@ -42,37 +42,80 @@ take effect.
 ```shell
 sudo usermod -aG kvm,libvirt $(whoami)
 ```
+Vadas assumes a working libvirt and QEMU/KVM setup.
 
 ### Installation
 
-`make install`
+```shell
+make install
+```
+
+This has only be tested on a modern Linux with all the dependencies installed.
+It is highly unlikely this will work on a macOS without further modification.
 
 ## Usage
 
-`vadas <command> [<subcommand>] [<options>]`
+First interactively create the virtual network:
+
+```shell
+vadas create network
+```
+
+> [!NOTE]
+>
+> The network should be tied to a network adapter connected to the internet and
+> shouldn't overlap with any other network ranges that are in use.
+
+Then interactively create a virtual machine:
+
+```shell
+vadas create vm
+```
+
+You'll be able to select OpenWrt version, target and image type. Optionally the
+network can be configure on the VM during the setup.
+
+You connect to the newly-create VM either during setup, or by doing:
+
+```shell
+vadas start [<vm_name>]
+```
+
+If `vm_name` is not provided, you can select a VM from the list interactively.
+
+> [!NOTE]
+>
+> Press `Ctrl+]` to exit the console connection to a VM.
+
+## CLI reference
+
+```shell
+vadas <command> [<subcommand>] [<options>]
+```
 
 When no arguments are supplied, most commands are interactive.
 
 ## Commands
 
-- **create network**: Interactively create the `vadas` virtual network.
-- **create vm**: Interactively download an OpenWrt image and create a new VM.
-- **configure vm [<vm_name>]**: Automatically configure the network for a
-  running VM via its console.
-- **list images**: List all downloaded disk images.
-- **list vm**: List all VMs managed by `vadas`.
-- **ps [--all]**: List running VMs. `--all` includes paused VMs.
-- **show ip [<vm_name>]**: Show the IP address of a VM.
-- **start [<vm_name>]**: Start a VM and connect to its console.
-- **stop [<vm_name>] [--force]**: Shut down a VM. `--force` will destroy it.
-- **pause [<vm_name>]**: Pause a running VM.
-- **resume [<vm_name>]**: Resume a paused VM.
-- **remove vm [<vm_name>]**: Remove a VM and its associated storage.
-- **remove network**: Remove the `vadas` virtual network.
-- **remove image [<image_name>]**: Remove a downloaded disk image.
-- **clean images**: Remove disk images not used by any VM.
-- **clean temp**: Remove temporary files.
-- **env**: Display environment variables used by `vadas`.
+| Command | Description |
+|-:|:-|
+| `create network`                 | Interactively create the `vadas` virtual network. |
+| `create vm`                      | Interactively download an OpenWrt image and create a new VM. |
+| `configure vm [<vm_name>]`       | Automatically configure the network for a running VM via its console. |
+| `list images`                    | List all downloaded disk images. |
+| `list vm`                        | List all VMs managed by `vadas`. |
+| `ps [--all]`                     | List running VMs. `--all` includes paused VMs. |
+| `show ip [<vm_name>]`            | Show the IP address of a VM. |
+| `start [<vm_name>]`              | Start a VM and connect to its console. |
+| `stop [<vm_name>] [--force]`     | Shut down a VM. `--force` will destroy it. |
+| `pause [<vm_name>]`              | Pause a running VM. |
+| `resume [<vm_name>]`             | Resume a paused VM. |
+| `remove vm [<vm_name>]`          | Remove a VM and its associated storage. |
+| `remove network`                 | Remove the `vadas` virtual network. |
+| `remove image [<image_name>]`    | Remove a downloaded disk image. |
+| `clean images`                   | Remove disk images not used by any VM. |
+| `clean temp`                     | Remove temporary files. |
+| `env`                            | Display environment variables used by `vadas`. |
 
 ## Environment Variables
 
