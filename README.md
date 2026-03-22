@@ -7,7 +7,7 @@ their lifecycle.
 
 Vadas means commander, leader, or chief in Lithuanian.
 
-Supported OpenWrt versions: 23.05+
+Supported OpenWrt versions: 23.05+ and snapshots
 
 Supported architectures (depending on availability in a release):
 
@@ -16,6 +16,20 @@ Supported architectures (depending on availability in a release):
 - malta/le
 - x86/64
 - x86/generic
+
+## Features
+
+- **Multi-Architecture**: Seamlessly creates VMs for x86-64, ARMv8, and MIPS,
+  both for release versions and snapshots.
+- **Simplified Networking**: Automates OpenWrt network configuration (IP,
+  Gateway, DNS) via config injection through a serial console, so newly-created
+  VMs get internet access out of the box.
+- **Image Management**: Automatically downloads, verifies, and caches official
+  OpenWrt images; cleans up unused artifacts.
+- **Interactive CLI**: Menu-driven interface for ease of use, with Bash
+  completion support for VM names and paths.
+- **File Transfer**: Integrated `cp` command to transfer files between host and
+  guest.
 
 ## Dependencies
 
@@ -28,8 +42,8 @@ This script requires the following tools to be installed:
 - `iproute2` (`ip`)
 - `jq`
 - `libvirt-client` (`virsh`)
-- `qemu-system-*` (e.g., `qemu-system-x86`, `qemu-system-aarch64`)
 - `openssh-clients` (`scp`)
+- `qemu-system-*` (e.g., `qemu-system-x86`, `qemu-system-aarch64`)
 - `virt-install` (`virt-xml`)
 
 ## Setup
@@ -43,7 +57,7 @@ take effect.
 ```shell
 sudo usermod -aG kvm,libvirt $(whoami)
 ```
-Vadas assumes a working libvirt and QEMU/KVM setup.
+Vadas assumes a working libvirt and QEMU/KVM setup on a x86-64 host.
 
 ### Installation
 
@@ -72,11 +86,10 @@ Then interactively create a virtual machine:
 ```shell
 vadas create vm
 ```
-
 You'll be able to select OpenWrt version, target and image type. Optionally the
 network can be configure on the VM during the setup.
 
-You connect to the newly-create VM either during setup, or by doing:
+Connect to the newly-create VM either during setup, or by doing:
 
 ```shell
 vadas start [<vm_name>]
