@@ -9,7 +9,7 @@ Vadas means commander, leader, or chief in Lithuanian.
 
 Supported OpenWrt versions: 23.05+
 
-Supported architectures (depending on availability in release):
+Supported architectures (depending on availability in a release):
 
 - armsr/armv8
 - malta/be
@@ -27,8 +27,9 @@ This script requires the following tools to be installed:
 - `expect`
 - `iproute2` (`ip`)
 - `jq`
-- `libvirt`
+- `libvirt-client` (`virsh`)
 - `qemu-system-*` (e.g., `qemu-system-x86`, `qemu-system-aarch64`)
+- `openssh-clients` (`scp`)
 - `virt-install` (`virt-xml`)
 
 ## Setup
@@ -99,23 +100,24 @@ When no arguments are supplied, most commands are interactive.
 
 | Command | Description |
 |-:|:-|
-| `create network`                 | Interactively create the `vadas` virtual network. |
-| `create vm`                      | Interactively download an OpenWrt image and create a new VM. |
-| `configure vm [<vm_name>]`       | Automatically configure the network for a running VM via its console. |
-| `list images`                    | List all downloaded disk images. |
-| `list vm`                        | List all VMs managed by `vadas`. |
-| `ps [--all]`                     | List running VMs. `--all` includes paused VMs. |
-| `show ip [<vm_name>]`            | Show the IP address of a VM. |
-| `start [<vm_name>]`              | Start a VM and connect to its console. |
-| `stop [<vm_name>] [--force]`     | Shut down a VM. `--force` will destroy it. |
-| `pause [<vm_name>]`              | Pause a running VM. |
-| `resume [<vm_name>]`             | Resume a paused VM. |
-| `remove vm [<vm_name>]`          | Remove a VM and its associated storage. |
-| `remove network`                 | Remove the `vadas` virtual network. |
-| `remove image [<image_name>]`    | Remove a downloaded disk image. |
 | `clean images`                   | Remove disk images not used by any VM. |
 | `clean temp`                     | Remove temporary files. |
 | `env`                            | Display environment variables used by `vadas`. |
+| `configure vm [<vm_name>]`       | Automatically configure the network for a running VM via its console. |
+| `cp [-r] <src> <dest>`           | Copy files and directories to and from a VM. |
+| `create network`                 | Interactively create the `vadas` virtual network. |
+| `create vm`                      | Interactively download an OpenWrt image and create a new VM. |
+| `list images`                    | List all downloaded disk images. |
+| `list vm`                        | List all VMs managed by `vadas`. |
+| `pause [<vm_name>]`              | Pause a running VM. |
+| `ps [--all]`                     | List running VMs. `--all` includes paused VMs. |
+| `resume [<vm_name>]`             | Resume a paused VM. |
+| `remove image [<image_name>]`    | Remove a downloaded disk image. |
+| `remove network`                 | Remove the `vadas` virtual network. |
+| `remove vm [<vm_name>]`          | Remove a VM and its associated storage. |
+| `show ip [<vm_name>]`            | Show the IP address of a VM. |
+| `start [<vm_name>]`              | Start a VM and connect to its console. |
+| `stop [<vm_name>] [--force]`     | Shut down a VM. `--force` will destroy it. |
 
 ## Environment Variables
 

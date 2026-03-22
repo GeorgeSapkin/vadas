@@ -75,6 +75,14 @@ function _print_help() {
 		  temp            Clean up temporary files
 		EOF
 		;;
+	cp|copy)
+		cat <<-EOF
+		[-r] <source> <destination>
+
+		Copy files and directories to and from a VM.
+		Source or destination can be a local path or <vm_name>:[<remote_path>].
+		EOF
+		;;
 	list)
 		cat <<-EOF
 		<subcommand>
@@ -141,6 +149,7 @@ function _print_help() {
 		  stop|kill       Stop a running VM (use --force for immediate stop)
 		  pause|suspend   Pause a running VM
 		  resume          Resume a paused VM
+		  cp              Copy files and directories to and from a VM
 		  ps              List running VMs (--all includes paused VMs)
 		  show            Show resource details (e.g., 'ip')
 
@@ -1030,6 +1039,48 @@ function cmd_configure() {
 	esac
 }
 
+function cmd_cp() {
+	_ensure scp
+	_ensure virsh
+
+	local scp_opts=''
+	if [[ "$1" == '-r' ]]; then
+		scp_opts='-r'
+		shift
+	fi
+
+	local src="$1"
+	local dest="$2"
+	if [ -z "$src" ] || [ -z "$dest" ]; then
+		_print_help cp
+		exit 1
+	fi
+
+	local scp_src="$src"
+	if [[ "$src" == *:* ]]; then
+		local vm_name="${src%%:*}"
+		local remote_path="${src#*:}"
+		local vm_ip
+		vm_ip=$(sub_cmd_show_ip "$vm_name") || exit 1
+		scp_src="root@${vm_ip}:${remote_path}"
+	fi
+
+	local scp_dest="$dest"
+	if [[ "$dest" == *:* ]]; then
+		local vm_name="${dest%%:*}"
+		local remote_path="${dest#*:}"
+		local vm_ip
+		vm_ip=$(sub_cmd_show_ip "$vm_name") || exit 1
+		scp_dest="root@${vm_ip}:${remote_path}"
+	fi
+
+	scp -O $scp_opts \
+		-o LogLevel=ERROR \
+		-o StrictHostKeyChecking=no \
+		-o UserKnownHostsFile=/dev/null \
+		"$scp_src" "$scp_dest"
+}
+
 function cmd_create() {
 	local sub_command="$1"
 	case "$sub_command" in
@@ -1755,6 +1806,7 @@ function sub_cmd_show_ip() {
 case "${1:-}" in
 clean)           cmd_clean "$2" ;;
 configure)       cmd_configure "${@:2}" ;;
+cp|copy)         cmd_cp "${@:2}" ;;
 create)          cmd_create "$2" ;;
 env)             cmd_env "$2" ;;
 images)          sub_cmd_list_images ;;
