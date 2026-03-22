@@ -250,8 +250,16 @@ function _create_vm() {
 	local used_images
 	used_images=$(_get_used_images)
 
+	local target_flat=${target//\//-}
+
 	# malta releases don't have profiles.json as of 25.12.1, but snapshots do
 	if [[ "$target" == malta/* && "$version" != 'snapshot' ]]; then
+		local checksums_path="$VADAS_TEMP_DIR/openwrt-$version-$target_flat-checksums.txt"
+		if ! _fetch_checksums "$version" "$target" "$checksums_path"; then
+			echo "Error: Failed to fetch checksums. The target '$target' may not be available for release '$version'."
+			exit 1
+		fi
+
 		local options=('ext4' 'squashfs')
 		local selected_image
 		selected_image=$(_interactive_menu \
@@ -261,7 +269,6 @@ function _create_vm() {
 			return 1
 		fi
 
-		local target_flat=${target//\//-}
 		local file_prefix="openwrt-${version}-"
 		if [ "$version" == 'snapshot' ]; then
 			file_prefix='openwrt-'
@@ -276,9 +283,6 @@ function _create_vm() {
 		local local_kernel_path="$VADAS_TEMP_DIR/$kernel_filename"
 		local local_image_path="$VADAS_TEMP_DIR/$image_filename"
 
-		local checksums_path
-		checksums_path=$(_fetch_checksums "$version" "$target")
-
 		local kernel_sha256 image_sha256
 		if [ -f "$checksums_path" ]; then
 			kernel_sha256=$(awk -v f="$kernel_filename" '$1 == f {print $2}' "$checksums_path")
@@ -291,9 +295,8 @@ function _create_vm() {
 		kernel_name=$(_install_image_file cp "$local_kernel_path" "$used_images")
 		image_name=$(_install_image_file gunzip "$local_image_path" "$used_images")
 	else
-		local profiles_path
-		profiles_path=$(_fetch_profiles "$version" "$target")
-		if [ $? -ne 0 ]; then
+		local profiles_path="$VADAS_TEMP_DIR/openwrt-$version-$target_flat-profiles.json"
+		if ! _fetch_profiles "$version" "$target" "$profiles_path"; then
 			echo "Error: Failed to fetch profiles. The target '$target' may not be available for release '$version'."
 			exit 1
 		fi
@@ -504,7 +507,6 @@ function _define_vm() {
 	local tmp_xml="$VADAS_TEMP_DIR/${vm_name}.xml"
 
 	echo "$vm_xml" > "$tmp_xml"
-	echo "Defining VM '$vm_name'..."
 	virsh define "$tmp_xml"
 	local ret=$?
 	rm -f "$tmp_xml"
@@ -542,15 +544,15 @@ function _download_image() {
 		exit 1
 	fi
 
-	if [ -n "$sha256" ] && command -v sha256sum >/dev/null 2>&1; then
-		echo 'Verifying checksum of downloaded file...'
+	if [ -n "$sha256" ]; then
+		echo -n 'Verifying checksum of downloaded file...'
 		local local_sha
 		local_sha=$(sha256sum "$path" | awk '{print $1}')
 		if [ "$local_sha" != "$sha256" ]; then
-			echo 'Error: Checksum of downloaded file is incorrect!'
+			echo ' checksum of downloaded file is incorrect!'
 			exit 1
 		fi
-		echo 'Download successful and verified.'
+		echo ' OK.'
 	fi
 }
 
@@ -578,27 +580,24 @@ function _fetch_checksums() {
 
 	local version="$1"
 	local target="$2"
+	local checksums_path="$3"
 
 	local url
 	url=$(_get_image_url "$version" "$target" '')
-	local target_flat=${target//\//-}
-	local checksums_path="$VADAS_TEMP_DIR/openwrt-$version-$target_flat-checksums.txt"
 
-	if [ -f "$checksums_path" ]; then
-		_print_msg "Using cached checksums from $checksums_path"
-	else
-		_print_msg "Fetching checksums from $url..."
+	# Checksums are only used for releases so no need to check for snapshots
+	if [ ! -f "$checksums_path" ]; then
+		_print_msg -n 'Fetching image checksums...'
 		# Use a subshell with pipefail to catch curl errors
-		if ! ( set -o pipefail; curl -sf "$url" |
+		if ! ( set -o pipefail; curl -sf "$url" | \
 			sed -n 's/.*href="\([^"]*\)".*class="sh">\([^<]*\)<.*/\1 \2/p' > "$checksums_path" )
 		then
+			_print_msg ' failed.'
 			rm -f "$checksums_path"
 			return 1
 		fi
-		_print_msg "Checksums cached to $checksums_path"
+		_print_msg ' OK.'
 	fi
-
-	echo "$checksums_path"
 }
 
 function _fetch_profiles() {
@@ -606,34 +605,33 @@ function _fetch_profiles() {
 
 	local version="$1"
 	local target="$2"
+	local profiles_path="$3"
 
 	local url
 	url=$(_get_image_url "$version" "$target" 'profiles.json')
-	local target_flat=${target//\//-}
-	local profiles_path="$VADAS_TEMP_DIR/openwrt-$version-$target_flat-profiles.json"
 
-	if [ "$version" != 'snapshot' ] && [ -f "$profiles_path" ]; then
-		_print_msg "Using cached profiles from $profiles_path"
-	else
-		_print_msg "Fetching image profiles from $url..."
+	if [ "$version" == 'snapshot' ] || [ ! -f "$profiles_path" ]; then
+		_print_msg -n 'Fetching image profiles...'
 		if ! curl -sf -o "$profiles_path" "$url"; then
+			_print_msg ' failed.'
 			rm -f "$profiles_path"
 			return 1
 		fi
-		_print_msg "Profiles cached to $profiles_path"
+		_print_msg ' OK.'
 	fi
-
-	echo "$profiles_path"
 }
 
 function _fetch_releases() {
 	_ensure curl
 	_ensure jq
 
-	echo 'Fetching OpenWrt releases...' >&2
-
+	echo -n 'Fetching OpenWrt releases...' >&2
 	local json
-	json=$(curl -s "$OPENWRT_DOWNLOAD_URL/.versions.json")
+	if ! json=$(curl -sf "$OPENWRT_DOWNLOAD_URL/.versions.json"); then
+		echo ' failed.' >&2
+		exit 1
+	fi
+	echo ' OK.' >&2
 
 	echo 'snapshot'
 	<<< "$json" jq -r '
@@ -855,8 +853,8 @@ function _get_vm_state() {
 	local state
 	state=$(virsh domstate "$vm_name" 2>&1)
 	if [ $? -ne 0 ]; then
-		echo "Error: Unable to get state for '$vm_name'."
-		echo "virsh output: $state"
+		echo "Error: Unable to get state for '$vm_name':"
+		echo "$state"
 		exit 1
 	fi
 	echo "${state/$'\n'/}"
@@ -986,8 +984,12 @@ function _interactive_menu() {
 }
 
 function _print_msg() {
-	echo "$1" >&2
-	((lines_printed++))
+	if [[ "$1" == '-n' ]]; then
+		echo -n "$2" >&2
+	else
+		echo "$1" >&2
+		((lines_printed++))
+	fi
 }
 
 function _read_octet() {
@@ -1399,10 +1401,8 @@ function cmd_stop() {
 	state=$(_get_vm_state "$vm_name")
 	if [ "$state" = 'running' ]; then
 		if (( force == 1 )); then
-			echo "Force stopping VM '$vm_name'..."
 			virsh destroy "$vm_name"
 		else
-			echo "Shutting down VM '$vm_name'..."
 			virsh shutdown "$vm_name"
 		fi
 	else
@@ -1680,7 +1680,7 @@ function sub_cmd_create_vm() {
 			"Select a release ${MENU_HELP_EXIT}:" "${releases[@]}" \
 		)
 		[ $? -ne 0 ] && exit 0
-		echo "Selected release: $version"
+		_print_msg "Selected release: $version"
 
 		local target_list=("${TARGETS[@]}")
 
@@ -1786,16 +1786,13 @@ function sub_cmd_remove_network() {
 	done
 
 	if [ -n "$dependent_vms" ]; then
-		echo "Error: The following VMs are using network '$NET_NAME':"
-		for vm in $dependent_vms; do
-			echo "- $vm"
-		done
-		echo 'Please remove them before removing the network.'
+		echo -e "Error: The following VMs are using network '$NET_NAME':\n"
+		_format_vms_for_menu "${dependent_vms// /$'\n'}"
+		echo -e '\nPlease remove them before removing the network.'
 		exit 1
 	fi
 
 	if _confirm "Are you sure you want to remove network '$NET_NAME'?"; then
-		echo "Removing network '$NET_NAME'..."
 		virsh net-destroy "$NET_NAME"
 		virsh net-undefine "$NET_NAME"
 	fi
@@ -1816,13 +1813,11 @@ function sub_cmd_remove_vm() {
 		if ! _confirm 'Are you sure you want to force stop and remove it?'; then
 			return 0
 		fi
-		echo "Stopping VM '$vm_name'..."
 		virsh destroy "$vm_name"
 	elif ! _confirm "Are you sure you want to remove VM '$vm_name'?"; then
 		return 0
 	fi
 
-	echo "Removing VM '$vm_name'..."
 	virsh undefine "$vm_name" --nvram --remove-all-storage
 }
 
