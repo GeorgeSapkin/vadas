@@ -250,7 +250,8 @@ function _create_vm() {
 	local used_images
 	used_images=$(_get_used_images)
 
-	if [[ "$target" == malta/* ]]; then
+	# malta releases don't have profiles.json as of 25.12.1, but snapshots do
+	if [[ "$target" == malta/* && "$version" != 'snapshot' ]]; then
 		local options=('ext4' 'squashfs')
 		local selected_image
 		selected_image=$(_interactive_menu \
@@ -261,8 +262,12 @@ function _create_vm() {
 		fi
 
 		local target_flat=${target//\//-}
-		local kernel_filename="openwrt-${version}-${target_flat}-vmlinux.elf"
-		local image_filename="openwrt-${version}-${target_flat}-rootfs-${selected_image}.img.gz"
+		local file_prefix="openwrt-${version}-"
+		if [ "$version" == 'snapshot' ]; then
+			file_prefix='openwrt-'
+		fi
+		local kernel_filename="${file_prefix}${target_flat}-vmlinux.elf"
+		local image_filename="${file_prefix}${target_flat}-rootfs-${selected_image}.img.gz"
 
 		local kernel_url image_url
 		kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
@@ -296,16 +301,32 @@ function _create_vm() {
 		local profiles_json
 		profiles_json=$(cat "$profiles_path")
 
+		# Extract version code from profiles for snapshots
+		local version_code
+		version_code=$(<<< "$profiles_json" jq -r '.version_code // empty')
+
+		local image_query
+		if [[ "$target" == malta/* ]]; then
+			image_query='
+				.profiles[].images[] |
+				select(.type == "rootfs") |
+				select(.filesystem == "ext4" or .filesystem == "squashfs") |
+				"\(.filesystem) \(.type)"
+			'
+		else
+			image_query='
+				.profiles[].images[] |
+				select(.type == "combined" or .type == "combined-efi") |
+				select(.filesystem == "ext4" or .filesystem == "squashfs") |
+				"\(.filesystem) \(.type)"
+			'
+		fi
+
 		local image_list
-		image_list=$(<<< "$profiles_json" jq -r '
-			.profiles[].images[] |
-			select(.type == "combined" or .type == "combined-efi") |
-			select(.filesystem == "ext4" or .filesystem == "squashfs") |
-			"\(.filesystem) \(.type)"
-		' | sort)
+		image_list=$(<<< "$profiles_json" jq -r "$image_query" | sort | uniq)
 
 		if [ -z "$image_list" ]; then
-			echo 'Error: No images found (combined/combined-efi) or failed to parse JSON.'
+			echo 'Error: No images found or failed to parse JSON.'
 			exit 1
 		fi
 
@@ -328,7 +349,7 @@ function _create_vm() {
 			.profiles[].images[] |
 			select(.filesystem == $fs and .type == $type) |
 			"\(.name) \(.sha256)"
-		')
+		' | head -n 1)
 
 		local image_filename image_sha256
 		read -r image_filename image_sha256 <<<"$image_info"
@@ -338,11 +359,48 @@ function _create_vm() {
 			exit 1
 		fi
 
-		local local_image_path="$VADAS_TEMP_DIR/$image_filename"
+		local local_image_filename="$image_filename"
+
+		if [ "$version" == 'snapshot' ] && [ -n "$version_code" ]; then
+			local_image_filename="${image_filename/openwrt-/openwrt-snapshot-}"
+			if [[ "$local_image_filename" == *'.img.gz' ]]; then
+				local_image_filename="${local_image_filename/.img.gz/-${version_code}.img.gz}"
+			else
+				local_image_filename="${local_image_filename%.*}-${version_code}.${local_image_filename##*.}"
+			fi
+		fi
+
+		local local_image_path="$VADAS_TEMP_DIR/$local_image_filename"
 		local image_url
 		image_url=$(_get_image_url "$version" "$target" "$image_filename")
 		_download_image "$image_url" "$local_image_path" "$image_sha256"
 		image_name=$(_install_image_file gunzip "$local_image_path" "$used_images")
+
+		# malta targets don't have combined images
+		if [[ "$target" == malta/* ]]; then
+			local kernel_filename kernel_sha256
+			if [[ "$target" == malta/* ]]; then
+				local kernel_info
+				kernel_info=$(<<< "$profiles_json" jq -r '
+					.profiles[].images[] |
+					select(.type == "kernel") |
+					"\(.name) \(.sha256)"
+				' | head -n 1)
+				read -r kernel_filename kernel_sha256 <<<"$kernel_info"
+			fi
+
+			local local_kernel_filename="$kernel_filename"
+			if [ "$version" == 'snapshot' ] && [ -n "$version_code" ] && [ -n "$kernel_filename" ]; then
+				local_kernel_filename="${kernel_filename/openwrt-/openwrt-snapshot-}"
+				local_kernel_filename="${local_kernel_filename%.*}-${version_code}.${local_kernel_filename##*.}"
+			fi
+
+			local local_kernel_path="$VADAS_TEMP_DIR/$local_kernel_filename"
+			local kernel_url
+			kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
+			_download_image "$kernel_url" "$local_kernel_path" "$kernel_sha256"
+			kernel_name=$(_install_image_file cp "$local_kernel_path" "$used_images")
+		fi
 	fi
 
 	case "$target" in
@@ -554,7 +612,7 @@ function _fetch_profiles() {
 	local target_flat=${target//\//-}
 	local profiles_path="$VADAS_TEMP_DIR/openwrt-$version-$target_flat-profiles.json"
 
-	if [ -f "$profiles_path" ]; then
+	if [ "$version" != 'snapshot' ] && [ -f "$profiles_path" ]; then
 		_print_msg "Using cached profiles from $profiles_path"
 	else
 		_print_msg "Fetching image profiles from $url..."
@@ -573,8 +631,11 @@ function _fetch_releases() {
 	_ensure jq
 
 	echo 'Fetching OpenWrt releases...' >&2
+
 	local json
 	json=$(curl -s "$OPENWRT_DOWNLOAD_URL/.versions.json")
+
+	echo 'snapshot'
 	<<< "$json" jq -r '
 		.versions_list[] |
 		select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) |
@@ -625,7 +686,11 @@ function _get_image_url() {
 	local version="$1"
 	local target="$2"
 	local filename="${3:-}"
-	echo "$OPENWRT_DOWNLOAD_URL/releases/$version/targets/$target/$filename"
+	if [ "$version" == 'snapshot' ]; then
+		echo "$OPENWRT_DOWNLOAD_URL/snapshots/targets/$target/$filename"
+	else
+		echo "$OPENWRT_DOWNLOAD_URL/releases/$version/targets/$target/$filename"
+	fi
 }
 
 function _get_next_ip() {
@@ -1620,7 +1685,7 @@ function sub_cmd_create_vm() {
 		local target_list=("${TARGETS[@]}")
 
 		local major_ver="${version%%.*}"
-		if (( major_ver <= 23 )); then
+		if [ "$major_ver" != 'snapshot' ] && (( major_ver <= 23 )); then
 			local filtered_targets=()
 			for t in "${target_list[@]}"; do
 				if [[ "$t" == malta/* && "$t" != 'malta/be' ]]; then
