@@ -954,18 +954,30 @@ function _interactive_menu() {
 		fi
 
 		case "$key" in
-			$'\x1b[A')  ((selected--)) ;;                   # Up arrow
-			$'\x1b[B')  ((selected++)) ;;                   # Down arrow
-			$'\x1b[5~') ((selected -= MENU_ITEM_LIMIT)) ;;  # Page Up
-			$'\x1b[6~') ((selected += MENU_ITEM_LIMIT)) ;;  # Page Down
-			$'\x1b')                                        # Escape key
+			$'\x1b[A') # Up arrow
+				((selected--))
+				if (( selected < 0 )); then selected=$((count - 1)); fi
+				;;
+			$'\x1b[B') # Down arrow
+				((selected++))
+				if (( selected >= count )); then selected=0; fi
+				;;
+			$'\x1b[5~') # Page Up
+				((selected -= MENU_ITEM_LIMIT))
+				;;
+			$'\x1b[6~') # Page Down
+				((selected += MENU_ITEM_LIMIT))
+				;;
+			$'\x1b') # Escape key
 				tput cuu "$menu_height" >&2
 				tput ed >&2
 				stty echo
 				tput cnorm >&2
 				trap - INT TERM
 				return 1 ;;
-			'') break ;;                                    # Enter key
+			'') # Enter key
+				break
+				;;
 		esac
 
 		if (( selected < 0 )); then selected=0;
