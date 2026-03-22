@@ -236,120 +236,159 @@ function _countdown() {
 	trap - INT TERM
 }
 
-function _create_vm_generic() {
+function _create_vm() {
+	_ensure virsh
+	_ensure virt-xml
+
 	local version="$1"
 	local target="$2"
 
-	local profiles_path
-	profiles_path=$(_fetch_profiles "$version" "$target")
-	if [ $? -ne 0 ]; then
-		echo "Error: Failed to fetch profiles. The target '$target' may not be available for release '$version'."
-		exit 1
-	fi
-
-	local profiles_json
-	profiles_json=$(cat "$profiles_path")
-
-	local image_list
-	image_list=$(<<< "$profiles_json" jq -r '
-		.profiles[].images[] |
-		select(.type == "combined" or .type == "combined-efi") |
-		select(.filesystem == "ext4" or .filesystem == "squashfs") |
-		"\(.filesystem) \(.type)"
-	' | sort)
-
-	if [ -z "$image_list" ]; then
-		echo 'Error: No images found (combined/combined-efi) or failed to parse JSON.'
-		exit 1
-	fi
-
-	local options
-	readarray -t options <<< "$image_list"
-
-	local selected_image
-	selected_image=$(_interactive_menu \
-		"Select an image ${MENU_HELP_BACK}:" "${options[@]}" \
-	)
-	if [ $? -ne 0 ]; then
-		return 1
-	fi
-
-	local fs type
-	read -r fs type <<< "$selected_image"
-
-	local file_info
-	file_info=$(<<< "$profiles_json" jq -r --arg fs "$fs" --arg type "$type" '
-		.profiles[].images[] |
-		select(.filesystem == $fs and .type == $type) |
-		"\(.name) \(.sha256)"
-	')
-
-	local filename sha256
-	read -r filename sha256 <<<"$file_info"
-
-	if [ -z "$filename" ]; then
-		echo 'Error: Could not determine filename for selection.'
-		exit 1
-	fi
-
-	local local_path="$VADAS_TEMP_DIR/$filename"
-	local file_url
-	file_url=$(_get_image_url "$version" "$target" "$filename")
-	_download_image "$file_url" "$local_path" "$sha256"
+	local image_name kernel_name
+	local arch boot_wait loader machine nvram_file nvram_template qemu_bin \
+		template
 
 	local used_images
 	used_images=$(_get_used_images)
 
-	local image_name
-	image_name=$(basename "$local_path" .gz)
-	image_name=$(_get_available_image_name "$image_name" "$used_images")
-	if _confirm_overwrite "$VADAS_IMAGE_DIR/$image_name"; then
-		echo "Unpacking image to $VADAS_IMAGE_DIR..."
-		gunzip -c "$local_path" > "$VADAS_IMAGE_DIR/$image_name"
+	if [[ "$target" == malta/* ]]; then
+		local options=('ext4' 'squashfs')
+		local selected_image
+		selected_image=$(_interactive_menu \
+			"Select an image ${MENU_HELP_BACK}:" "${options[@]}" \
+		)
+		if [ $? -ne 0 ]; then
+			return 1
+		fi
+
+		local target_flat=${target//\//-}
+		local kernel_filename="openwrt-${version}-${target_flat}-vmlinux.elf"
+		local image_filename="openwrt-${version}-${target_flat}-rootfs-${selected_image}.img.gz"
+
+		local kernel_url image_url
+		kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
+		image_url=$(_get_image_url "$version" "$target" "$image_filename")
+
+		local local_kernel_path="$VADAS_TEMP_DIR/$kernel_filename"
+		local local_image_path="$VADAS_TEMP_DIR/$image_filename"
+
+		local checksums_path
+		checksums_path=$(_fetch_checksums "$version" "$target")
+
+		local kernel_sha256 image_sha256
+		if [ -f "$checksums_path" ]; then
+			kernel_sha256=$(awk -v f="$kernel_filename" '$1 == f {print $2}' "$checksums_path")
+			image_sha256=$(awk -v f="$image_filename" '$1 == f {print $2}' "$checksums_path")
+		fi
+
+		_download_image "$kernel_url" "$local_kernel_path" "$kernel_sha256"
+		_download_image "$image_url" "$local_image_path" "$image_sha256"
+
+		kernel_name=$(_install_image_file cp "$local_kernel_path" "$used_images")
+		image_name=$(_install_image_file gunzip "$local_image_path" "$used_images")
 	else
-		echo 'Using existing image.'
+		local profiles_path
+		profiles_path=$(_fetch_profiles "$version" "$target")
+		if [ $? -ne 0 ]; then
+			echo "Error: Failed to fetch profiles. The target '$target' may not be available for release '$version'."
+			exit 1
+		fi
+
+		local profiles_json
+		profiles_json=$(cat "$profiles_path")
+
+		local image_list
+		image_list=$(<<< "$profiles_json" jq -r '
+			.profiles[].images[] |
+			select(.type == "combined" or .type == "combined-efi") |
+			select(.filesystem == "ext4" or .filesystem == "squashfs") |
+			"\(.filesystem) \(.type)"
+		' | sort)
+
+		if [ -z "$image_list" ]; then
+			echo 'Error: No images found (combined/combined-efi) or failed to parse JSON.'
+			exit 1
+		fi
+
+		local options
+		readarray -t options <<< "$image_list"
+
+		local selected_image
+		selected_image=$(_interactive_menu \
+			"Select an image ${MENU_HELP_BACK}:" "${options[@]}" \
+		)
+		if [ $? -ne 0 ]; then
+			return 1
+		fi
+
+		local fs type
+		read -r fs type <<< "$selected_image"
+
+		local image_info
+		image_info=$(<<< "$profiles_json" jq -r --arg fs "$fs" --arg type "$type" '
+			.profiles[].images[] |
+			select(.filesystem == $fs and .type == $type) |
+			"\(.name) \(.sha256)"
+		')
+
+		local image_filename image_sha256
+		read -r image_filename image_sha256 <<<"$image_info"
+
+		if [ -z "$image_filename" ]; then
+			echo 'Error: Could not determine image filename for selection.'
+			exit 1
+		fi
+
+		local local_image_path="$VADAS_TEMP_DIR/$image_filename"
+		local image_url
+		image_url=$(_get_image_url "$version" "$target" "$image_filename")
+		_download_image "$image_url" "$local_image_path" "$image_sha256"
+		image_name=$(_install_image_file gunzip "$local_image_path" "$used_images")
 	fi
 
-	local vm_name="${image_name%.img}"
-	vm_name=$(_get_unique_vm_name "$vm_name")
-	local arch boot_wait cfg_sleep loader machine nvram_file nvram_template \
-		qemu_bin template
-
 	case "$target" in
-	# armsr/armv7)
-	# 	arch='armv7l'
-	# 	machine='virt'
-	# 	qemu_bin='/usr/bin/qemu-system-arm'
-	# 	template=vm_arm
-	# 	;;
 	armsr/armv8)
 		arch='aarch64'
-		boot_wait=20
+		boot_wait=40
 		loader='/usr/share/edk2/aarch64/QEMU_EFI-silent-pflash.qcow2'
 		machine='virt'
 		nvram_file="$VADAS_IMAGE_DIR/$(basename "$image_name" .img).nvram"
 		nvram_template='/usr/share/edk2/aarch64/vars-template-pflash.qcow2'
 		qemu_bin='/usr/bin/qemu-system-aarch64'
-		cfg_sleep=20
 		template=vm_arm
+		;;
+	malta/be)
+		arch='mips'
+		qemu_bin='/usr/bin/qemu-system-mips'
+		boot_wait=30
+		template=vm_malta
+		;;
+	malta/le)
+		arch='mipsel'
+		qemu_bin='/usr/bin/qemu-system-mipsel'
+		boot_wait=30
+		template=vm_malta
 		;;
 	x86/64)
 		arch='x86_64'
-		boot_wait=10
+		boot_wait=15
 		machine='q35'
 		qemu_bin='/usr/bin/qemu-system-x86_64'
-		cfg_sleep=5
 		template=vm_x86
 		;;
 	x86/generic)
 		arch='i686'
-		boot_wait=10
+		boot_wait=15
 		machine='pc'
 		qemu_bin='/usr/bin/qemu-system-i386'
-		cfg_sleep=5
 		template=vm_x86
 		;;
 	esac
+
+	local vm_base_name
+	vm_base_name="${image_name%.img}"
+
+	local vm_name
+	vm_name=$(_get_unique_vm_name "$vm_base_name")
 
 	local ip
 	ip=$(_get_next_ip)
@@ -367,6 +406,7 @@ function _create_vm_generic() {
 		'ARCH'            "$arch" \
 		'EMULATOR'        "$qemu_bin" \
 		'IMAGE'           "$VADAS_IMAGE_DIR/$image_name" \
+		'KERNEL'          "$VADAS_IMAGE_DIR/$kernel_name" \
 		'LOADER'          "$loader" \
 		'MACHINE'         "$machine" \
 		'NET_IP'          "$ip" \
@@ -376,128 +416,18 @@ function _create_vm_generic() {
 	)
 
 	if _define_vm "$vm_name" "$vm_xml"; then
-		cmd_start "$vm_name" --no-connect
-
-		if _confirm "Configure network for '$vm_name'?" y; then
-			sub_cmd_configure_vm "$vm_name" "$boot_wait" "$cfg_sleep"
-			boot_wait=0
-		fi
-
-		_connect_to_vm "$vm_name" "$boot_wait"
-	fi
-	return 0
-}
-
-function _create_vm_no_profiles() {
-	_ensure virsh
-	_ensure virt-xml
-
-	local version="$1"
-	local target="$2"
-
-	local options=('ext4' 'squashfs')
-	local fs
-	fs=$(_interactive_menu \
-		"Select filesystem ${MENU_HELP_BACK}:" "${options[@]}" \
-	)
-	if [ $? -ne 0 ]; then
-		return 1
-	fi
-
-	local target_flat=${target//\//-}
-	local kernel_filename="openwrt-${version}-${target_flat}-vmlinux.elf"
-	local rootfs_filename="openwrt-${version}-${target_flat}-rootfs-${fs}.img.gz"
-
-	local kernel_url rootfs_url
-	kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
-	rootfs_url=$(_get_image_url "$version" "$target" "$rootfs_filename")
-
-	local local_kernel_path="$VADAS_TEMP_DIR/$kernel_filename"
-	local local_rootfs_path="$VADAS_TEMP_DIR/$rootfs_filename"
-
-	_download_image "$kernel_url" "$local_kernel_path"
-	_download_image "$rootfs_url" "$local_rootfs_path"
-
-	local used_images
-	used_images=$(_get_used_images)
-
-	local kernel_name
-	kernel_name=$(basename "$local_kernel_path")
-	kernel_name=$(_get_available_image_name "$kernel_name" "$used_images")
-	if _confirm_overwrite "$VADAS_IMAGE_DIR/$kernel_name"; then
-		echo "Copying kernel to $VADAS_IMAGE_DIR..."
-		cp "$local_kernel_path" "$VADAS_IMAGE_DIR/$kernel_name"
-	else
-		echo 'Using existing kernel.'
-	fi
-
-	local rootfs_name
-	rootfs_name=$(basename "$local_rootfs_path" .gz)
-	rootfs_name=$(_get_available_image_name "$rootfs_name" "$used_images")
-	if _confirm_overwrite "$VADAS_IMAGE_DIR/$rootfs_name"; then
-		echo "Unpacking rootfs to $VADAS_IMAGE_DIR..."
-		gunzip -c "$local_rootfs_path" > "$VADAS_IMAGE_DIR/$rootfs_name"
-	else
-		echo 'Using existing rootfs.'
-	fi
-	local vm_name="${rootfs_name%.img}"
-	vm_name=$(_get_unique_vm_name "$vm_name")
-	local arch boot_wait qemu_bin
-
-	case "$target" in
-	malta/be)
-		arch='mips'
-		qemu_bin='/usr/bin/qemu-system-mips'
-		boot_wait=10
-		;;
-	# malta/be64)
-	# 	arch='mips64'
-	# 	qemu_bin='/usr/bin/qemu-system-mips64'
-	# 	boot_wait=10
-	# 	;;
-	malta/le)
-		arch='mipsel'
-		qemu_bin='/usr/bin/qemu-system-mipsel'
-		boot_wait=10
-		;;
-	# malta/le64)
-	# 	arch='mips64el'
-	# 	qemu_bin='/usr/bin/qemu-system-mips64el'
-	# 	boot_wait=10
-	# 	;;
-	esac
-
-	local ip
-	ip=$(_get_next_ip)
-	if [ -z "$ip" ]; then
-		echo 'Error: Failed to find an available IP address for the VM.' >&2
-		return 1
-	fi
-	echo "Allocated IP: $ip"
-
-	local vm_xml
-	vm_xml=$(_render_template "$VADAS_TEMPLATE_DIR/vm_malta.xml" \
-		'VM_CORES'  "$VM_CORES" \
-		'VM_NAME'   "$vm_name" \
-		'ARCH'      "$arch" \
-		'KERNEL'    "$VADAS_IMAGE_DIR/$kernel_name" \
-		'EMULATOR'  "$qemu_bin" \
-		'NET_IP'    "$ip" \
-		'NET_NAME'  "$NET_NAME" \
-		'ROOTFS'    "$VADAS_IMAGE_DIR/$rootfs_name"
-	)
-
-	if _define_vm "$vm_name" "$vm_xml"; then
-		# MIPS-specific as virsh doesn't preserve the slot definition
-		if ! virt-xml "$vm_name" --edit --network address.slot=0x12; then
-			echo 'Error: Failed to update network configuration.' >&2
-			exit 1
+		if [[ "$target" == malta/* ]]; then
+			# MIPS-specific as virsh doesn't preserve the slot definition
+			if ! virt-xml "$vm_name" --edit --network address.slot=0x12; then
+				echo 'Error: Failed to update network configuration.' >&2
+				exit 1
+			fi
 		fi
 
 		cmd_start "$vm_name" --no-connect
 
 		if _confirm "Configure network for '$vm_name'?" y; then
-			sub_cmd_configure_vm "$vm_name" "$boot_wait" "20"
+			sub_cmd_configure_vm "$vm_name" "$boot_wait"
 			boot_wait=0
 		fi
 
@@ -537,14 +467,14 @@ function _download_image() {
 			return 0
 		fi
 
-		echo 'Local file found. Verifying checksum...'
+		echo -n 'Local file found. Verifying checksum...'
 		local local_sha
 		local_sha=$(sha256sum "$path" | awk '{print $1}')
 		if [ "$local_sha" == "$sha256" ]; then
-			echo 'Checksum OK. Skipping download.'
+			echo ' OK. Skipping download.'
 			return 0
 		fi
-		echo 'Checksum mismatch. Redownloading.'
+		echo ' mismatch. Redownloading.'
 	fi
 
 	echo "Downloading image from $url..."
@@ -585,6 +515,34 @@ function _ensure_net() {
 	fi
 }
 
+function _fetch_checksums() {
+	_ensure curl
+
+	local version="$1"
+	local target="$2"
+
+	local url
+	url=$(_get_image_url "$version" "$target" '')
+	local target_flat=${target//\//-}
+	local checksums_path="$VADAS_TEMP_DIR/openwrt-$version-$target_flat-checksums.txt"
+
+	if [ -f "$checksums_path" ]; then
+		_print_msg "Using cached checksums from $checksums_path"
+	else
+		_print_msg "Fetching checksums from $url..."
+		# Use a subshell with pipefail to catch curl errors
+		if ! ( set -o pipefail; curl -sf "$url" |
+			sed -n 's/.*href="\([^"]*\)".*class="sh">\([^<]*\)<.*/\1 \2/p' > "$checksums_path" )
+		then
+			rm -f "$checksums_path"
+			return 1
+		fi
+		_print_msg "Checksums cached to $checksums_path"
+	fi
+
+	echo "$checksums_path"
+}
+
 function _fetch_profiles() {
 	_ensure curl
 
@@ -592,7 +550,7 @@ function _fetch_profiles() {
 	local target="$2"
 
 	local url
-	url=$(_get_image_url "$version" "$target" "profiles.json")
+	url=$(_get_image_url "$version" "$target" 'profiles.json')
 	local target_flat=${target//\//-}
 	local profiles_path="$VADAS_TEMP_DIR/openwrt-$version-$target_flat-profiles.json"
 
@@ -666,7 +624,7 @@ function _get_available_image_name() {
 function _get_image_url() {
 	local version="$1"
 	local target="$2"
-	local filename="$3"
+	local filename="${3:-}"
 	echo "$OPENWRT_DOWNLOAD_URL/releases/$version/targets/$target/$filename"
 }
 
@@ -837,6 +795,37 @@ function _get_vm_state() {
 		exit 1
 	fi
 	echo "${state/$'\n'/}"
+}
+
+function _install_image_file() {
+	local method="$1" # cp or gunzip
+	local src="$2"
+	local used_images="$3"
+
+	local name
+	if [ "$method" == 'gunzip' ]; then
+		name=$(basename "$src" .gz)
+	else
+		name=$(basename "$src")
+	fi
+
+	name=$(_get_available_image_name "$name" "$used_images")
+	local dest="$VADAS_IMAGE_DIR/$name"
+
+	mkdir -p "$VADAS_IMAGE_DIR" >/dev/null 2>&1
+
+	if _confirm_overwrite "$dest"; then
+		if [ "$method" == 'gunzip' ]; then
+			echo "Unpacking $name image..." >&2
+			gunzip -c "$src" > "$dest"
+		else
+			echo "Copying $name file..." >&2
+			cp "$src" "$dest" >&2
+		fi
+	else
+		echo 'Using existing file.' >&2
+	fi
+	echo "$name"
 }
 
 function _interactive_menu() {
@@ -1655,14 +1644,7 @@ function sub_cmd_create_vm() {
 			local lines_printed=0
 			_print_msg "Selected target: $target"
 
-			local create
-			if [[ "$target" == malta/* ]]; then
-				create=_create_vm_no_profiles
-			else
-				create=_create_vm_generic
-			fi
-
-			if ! "$create" "$version" "$target"; then
+			if ! _create_vm "$version" "$target"; then
 				tput cuu "$lines_printed"
 				tput ed
 				continue

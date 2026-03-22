@@ -20,7 +20,7 @@
     <emulator>{{EMULATOR}}</emulator>
     <disk type='file' device='disk'>
       <driver name='qemu' type='raw'/>
-      <source file='{{ROOTFS}}'/>
+      <source file='{{IMAGE}}'/>
       <target dev='sda' bus='ide'/>
     </disk>
     <controller type='ide' index='0'/>
