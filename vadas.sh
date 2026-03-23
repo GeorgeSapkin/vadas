@@ -979,9 +979,12 @@ function _interactive_menu() {
 				tput el >&2
 				if (( idx < count )); then
 					if (( idx == selected )); then
-						local clean_item
-						clean_item=$(sed 's/\x1b\[[0-9;]*m//g' <<< "${options[idx]}" )
-						echo -e "\e[1;34m> ${clean_item}\e[0m" >&2
+						local item="${options[idx]}"
+						if [[ "$item" == *"$ICON_ON"* ]]; then
+							# Preserve status indicator's color
+							item=$(sed 's/\x1b\[0m/\x1b[1;34m/g' <<< "$item")
+						fi
+						echo -e "\e[1;34m> \e[0m${item}\e[0m" >&2
 					else
 						echo "  ${options[idx]}" >&2
 					fi
