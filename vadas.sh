@@ -32,6 +32,8 @@ readonly NET_NAME='vadas'
 readonly NET_MASK='255.255.255.0'
 readonly NET_RANGES=('10.0.0.0/8' '172.16.0.0/12' '192.168.0.0/16')
 
+readonly POOL_NAME='vadas'
+
 readonly VM_CORES=2
 readonly VM_RAM=524288
 
@@ -74,6 +76,7 @@ function _print_help() {
 
 		Subcommands:
 		  network         Interactively create the virtual network
+		  pool            Create the storage pool
 		  vm              Interactively create a new VM
 		EOF
 		;;
@@ -110,6 +113,7 @@ function _print_help() {
 
 		Subcommands:
 		  network         Remove the virtual network
+		  pool            Remove the storage pool
 		  vm              Remove a VM
 		EOF
 		;;
@@ -247,6 +251,24 @@ function _countdown() {
 	trap - INT TERM
 }
 
+function _create_pool() {
+	local pool_xml
+	pool_xml=$(_render_template "$VADAS_TEMPLATE_DIR/pool.xml" \
+		'POOL_NAME' "$POOL_NAME" \
+		'POOL_PATH' "$VADAS_IMAGE_DIR"
+	)
+
+	mkdir -p "$VADAS_IMAGE_DIR"
+	mkdir -p "$VADAS_TEMP_DIR"
+
+	local tmp_xml="$VADAS_TEMP_DIR/${POOL_NAME}.xml"
+	echo "$pool_xml" > "$tmp_xml"
+	virsh pool-define "$tmp_xml" | _trim_empty
+	virsh pool-start "$POOL_NAME" | _trim_empty
+	virsh pool-autostart "$POOL_NAME" | _trim_empty
+	rm -f "$tmp_xml"
+}
+
 function _create_vm() {
 	_ensure virsh
 	_ensure virt-xml
@@ -254,7 +276,7 @@ function _create_vm() {
 	local version="$1"
 	local target="$2"
 
-	local image_name kernel_name
+	local image_path kernel_path
 	local arch boot_wait loader machine nvram_file nvram_template qemu_bin \
 		template
 
@@ -307,8 +329,10 @@ function _create_vm() {
 		_download_image "$kernel_url" "$local_kernel_path" "$kernel_sha256"
 		_download_image "$image_url" "$local_image_path" "$image_sha256"
 
-		kernel_name=$(_install_image_file cp "$local_kernel_path" "$used_images")
-		image_name=$(_install_image_file gunzip "$local_image_path" "$used_images")
+		_ensure_pool "$POOL_NAME"
+
+		kernel_path=$(_install_image_file cp "$local_kernel_path" "$used_images")
+		image_path=$(_install_image_file gunzip "$local_image_path" "$used_images")
 	else
 		local profiles_path
 		profiles_path=$(_get_cached_file_path "$version" "openwrt-$version-$target_flat-profiles.json")
@@ -395,7 +419,10 @@ function _create_vm() {
 		local image_url
 		image_url=$(_get_image_url "$version" "$target" "$image_filename")
 		_download_image "$image_url" "$local_image_path" "$image_sha256"
-		image_name=$(_install_image_file gunzip "$local_image_path" "$used_images")
+
+		_ensure_pool "$POOL_NAME"
+
+		image_path=$(_install_image_file gunzip "$local_image_path" "$used_images")
 
 		# malta targets don't have combined images
 		if [[ "$target" == malta/* ]]; then
@@ -421,7 +448,7 @@ function _create_vm() {
 			local kernel_url
 			kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
 			_download_image "$kernel_url" "$local_kernel_path" "$kernel_sha256"
-			kernel_name=$(_install_image_file cp "$local_kernel_path" "$used_images")
+			kernel_path=$(_install_image_file cp "$local_kernel_path" "$used_images")
 		fi
 	fi
 
@@ -431,7 +458,7 @@ function _create_vm() {
 		boot_wait=40
 		loader='/usr/share/edk2/aarch64/QEMU_EFI-silent-pflash.qcow2'
 		machine='virt'
-		nvram_file="$VADAS_IMAGE_DIR/$(basename "$image_name" .img).nvram"
+		nvram_file="$VADAS_IMAGE_DIR/$(basename "$image_path" .img).nvram"
 		nvram_template='/usr/share/edk2/aarch64/vars-template-pflash.qcow2'
 		qemu_bin='/usr/bin/qemu-system-aarch64'
 		template=vm_arm
@@ -465,7 +492,7 @@ function _create_vm() {
 	esac
 
 	local vm_base_name
-	vm_base_name="${image_name%.img}"
+	vm_base_name="$(basename "$image_path" .img)"
 
 	local vm_name
 	vm_name=$(_get_unique_vm_name "$vm_base_name")
@@ -485,8 +512,8 @@ function _create_vm() {
 		'VM_RAM'          "$VM_RAM" \
 		'ARCH'            "$arch" \
 		'EMULATOR'        "$qemu_bin" \
-		'IMAGE'           "$VADAS_IMAGE_DIR/$image_name" \
-		'KERNEL'          "$VADAS_IMAGE_DIR/$kernel_name" \
+		'IMAGE'           "$image_path" \
+		'KERNEL'          "$kernel_path" \
 		'LOADER'          "$loader" \
 		'MACHINE'         "$machine" \
 		'NET_IP'          "$ip" \
@@ -595,6 +622,18 @@ function _ensure_net() {
 	if ! virsh net-info "$name" >/dev/null 2>&1; then
 		echo "${F_RED}ERROR${F_RESET}: Virtual network '$name' does not exist. Please create it first using '$(basename "$0") create network'." >&2
 		exit 1
+	fi
+}
+
+function _ensure_pool() {
+	_ensure virsh
+
+	local name="$1"
+
+	if ! virsh pool-info "$name" >/dev/null 2>&1; then
+		_create_pool
+	elif ! virsh pool-list --name | grep -Fqx "$name"; then
+		virsh pool-start "$name" | _trim_empty
 	fi
 }
 
@@ -950,7 +989,8 @@ function _install_image_file() {
 			cp "$src" "$dest" >&2
 		fi
 	fi
-	echo "$name"
+	virsh pool-refresh "$POOL_NAME" >/dev/null 2>&1
+	echo "$dest"
 }
 
 function _interactive_menu() {
@@ -1238,6 +1278,9 @@ function cmd_create() {
 	network)
 		sub_cmd_create_network
 		;;
+	pool)
+		sub_cmd_create_pool
+		;;
 	vm)
 		sub_cmd_create_vm
 		;;
@@ -1343,6 +1386,9 @@ function cmd_remove() {
 		;;
 	network)
 		sub_cmd_remove_network
+		;;
+	pool)
+		sub_cmd_remove_pool
 		;;
 	vm)
 		sub_cmd_remove_vm "$arg"
@@ -1738,6 +1784,17 @@ function sub_cmd_create_network() {
 	done
 }
 
+function sub_cmd_create_pool() {
+	_ensure virsh
+
+	if virsh pool-info "$POOL_NAME" >/dev/null 2>&1; then
+		echo "${F_RED}ERROR${F_RESET}: Storage pool '$POOL_NAME' already exists."
+		exit 1
+	fi
+
+	_create_pool
+}
+
 function sub_cmd_create_vm() {
 	_ensure curl
 	_ensure gunzip
@@ -1748,7 +1805,6 @@ function sub_cmd_create_vm() {
 
 	_ensure_net "$NET_NAME"
 
-	mkdir -p "$VADAS_IMAGE_DIR"
 	mkdir -p "$VADAS_TEMP_DIR"
 
 	readarray -t releases < <(_fetch_releases)
@@ -1902,6 +1958,39 @@ function sub_cmd_remove_network() {
 	if _confirm "Are you sure you want to remove network '$NET_NAME'?"; then
 		virsh net-destroy "$NET_NAME" | _trim_empty
 		virsh net-undefine "$NET_NAME" | _trim_empty
+	fi
+}
+
+function sub_cmd_remove_pool() {
+	_ensure virsh
+	_ensure xmllint
+
+	if ! virsh pool-info "$POOL_NAME" >/dev/null 2>&1; then
+		echo "${F_RED}ERROR${F_RESET}: Storage pool '$POOL_NAME' does not exist."
+		exit 1
+	fi
+
+	local dependent_vms=''
+	local vms
+	vms=$(_get_vm_list --all)
+	for vm in $vms; do
+		if virsh dumpxml "$vm" 2>/dev/null |
+			xmllint --xpath "//disk[@device='disk']/source/@file" - 2>/dev/null |
+			grep -qF "$VADAS_IMAGE_DIR"; then
+			dependent_vms="$dependent_vms $vm"
+		fi
+	done
+
+	if [ -n "$dependent_vms" ]; then
+		echo -e "${F_RED}ERROR${F_RESET}: The following VMs are using storage pool '$POOL_NAME':\n"
+		_format_vms_for_menu "${dependent_vms// /$'\n'}"
+		echo -e '\nPlease remove them before removing the storage pool.'
+		exit 1
+	fi
+
+	if _confirm "Are you sure you want to remove storage pool '$POOL_NAME'?"; then
+		virsh pool-destroy "$POOL_NAME" | _trim_empty
+		virsh pool-undefine "$POOL_NAME" | _trim_empty
 	fi
 }
 

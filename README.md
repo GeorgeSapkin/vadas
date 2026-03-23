@@ -121,6 +121,7 @@ When no arguments are supplied, most commands are interactive.
 | `configure vm [<vm_name>]`       | Automatically configure the network for a running VM via its console. |
 | `cp [-r] <src> <dest>`           | Copy files and directories to and from a VM. |
 | `create network`                 | Interactively create the `vadas` virtual network. |
+| `create pool`                    | Create the `vadas` storage pool. |
 | `create vm`                      | Interactively download an OpenWrt image and create a new VM. |
 | `list images`                    | List all downloaded disk images. |
 | `list vm`                        | List all VMs managed by `vadas`. |
@@ -128,6 +129,7 @@ When no arguments are supplied, most commands are interactive.
 | `ps [--all]`                     | List running VMs. `--all` includes paused VMs. |
 | `resume [<vm_name>]`             | Resume a paused VM. |
 | `remove network`                 | Remove the `vadas` virtual network. |
+| `remove pool`                    | Remove the `vadas` storage pool. |
 | `remove vm [<vm_name>]`          | Remove a VM and its associated storage. |
 | `show ip [<vm_name>]`            | Show the IP address of a VM. |
 | `start [<vm_name>]`              | Start a VM and connect to its console. |

@@ -1,0 +1,9 @@
+<pool type='dir'>
+  <name>{{POOL_NAME}}</name>
+  <metadata>
+    <vadas:tags xmlns:vadas="urn:vadas" />
+  </metadata>
+  <target>
+    <path>{{POOL_PATH}}</path>
+  </target>
+</pool>
