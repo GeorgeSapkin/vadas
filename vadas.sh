@@ -17,6 +17,7 @@ readonly TARGETS=(
 readonly OPENWRT_DOWNLOAD_URL='https://downloads.openwrt.org'
 readonly MIN_OPENWRT_VER=21
 
+readonly VADAS_CACHE_DIR="${VADAS_CONFIG_DIR:-${HOME}/.cache/vadas}"
 readonly VADAS_CONFIG_DIR="${VADAS_CONFIG_DIR:-${HOME}/.config/vadas}"
 readonly VADAS_IMAGE_DIR="${VADAS_IMAGE_DIR:-${VADAS_CONFIG_DIR}/images}"
 readonly VADAS_TEMPLATE_DIR="${VADAS_TEMPLATE_DIR:-${VADAS_CONFIG_DIR}/templates}"
@@ -72,6 +73,7 @@ function _print_help() {
 		<subcommand>
 
 		Subcommands:
+		  cache           Clean up cache files
 		  images          Clean up unused disk images
 		  temp            Clean up temporary files
 		EOF
@@ -255,7 +257,8 @@ function _create_vm() {
 
 	# malta releases don't have profiles.json as of 25.12.1, but snapshots do
 	if [[ "$target" == malta/* && "$version" != 'snapshot' ]]; then
-		local checksums_path="$VADAS_TEMP_DIR/openwrt-$version-$target_flat-checksums.txt"
+		local checksums_path
+		checksums_path=$(_get_cached_file_path "$version" "openwrt-$version-$target_flat-checksums.txt")
 		if ! _fetch_checksums "$version" "$target" "$checksums_path"; then
 			echo "Error: Failed to fetch checksums. The target '$target' may not be available for release '$version'."
 			exit 1
@@ -281,8 +284,10 @@ function _create_vm() {
 		kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
 		image_url=$(_get_image_url "$version" "$target" "$image_filename")
 
-		local local_kernel_path="$VADAS_TEMP_DIR/$kernel_filename"
-		local local_image_path="$VADAS_TEMP_DIR/$image_filename"
+		local local_kernel_path
+		local_kernel_path=$(_get_cached_file_path "$version" "$kernel_filename")
+		local local_image_path
+		local_image_path=$(_get_cached_file_path "$version" "$image_filename")
 
 		local kernel_sha256 image_sha256
 		if [ -f "$checksums_path" ]; then
@@ -296,7 +301,8 @@ function _create_vm() {
 		kernel_name=$(_install_image_file cp "$local_kernel_path" "$used_images")
 		image_name=$(_install_image_file gunzip "$local_image_path" "$used_images")
 	else
-		local profiles_path="$VADAS_TEMP_DIR/openwrt-$version-$target_flat-profiles.json"
+		local profiles_path
+		profiles_path=$(_get_cached_file_path "$version" "openwrt-$version-$target_flat-profiles.json")
 		if ! _fetch_profiles "$version" "$target" "$profiles_path"; then
 			echo "Error: Failed to fetch profiles. The target '$target' may not be available for release '$version'."
 			exit 1
@@ -374,7 +380,8 @@ function _create_vm() {
 			fi
 		fi
 
-		local local_image_path="$VADAS_TEMP_DIR/$local_image_filename"
+		local local_image_path
+		local_image_path=$(_get_cached_file_path "$version" "$local_image_filename")
 		local image_url
 		image_url=$(_get_image_url "$version" "$target" "$image_filename")
 		_download_image "$image_url" "$local_image_path" "$image_sha256"
@@ -399,7 +406,8 @@ function _create_vm() {
 				local_kernel_filename="${local_kernel_filename%.*}-${version_code}.${local_kernel_filename##*.}"
 			fi
 
-			local local_kernel_path="$VADAS_TEMP_DIR/$local_kernel_filename"
+			local local_kernel_path
+			local_kernel_path=$(_get_cached_file_path "$version" "$local_kernel_filename")
 			local kernel_url
 			kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
 			_download_image "$kernel_url" "$local_kernel_path" "$kernel_sha256"
@@ -505,8 +513,9 @@ function _define_vm() {
 
 	local vm_name="$1"
 	local vm_xml="$2"
-	local tmp_xml="$VADAS_TEMP_DIR/${vm_name}.xml"
 
+	local tmp_xml="$VADAS_TEMP_DIR/${vm_name}.xml"
+	mkdir -p "$VADAS_TEMP_DIR"
 	echo "$vm_xml" > "$tmp_xml"
 	virsh define "$tmp_xml"
 	local ret=$?
@@ -705,6 +714,19 @@ function _get_available_image_name() {
 		echo "$candidate"
 		return 0
 	done
+}
+
+function _get_cached_file_path() {
+	local version="$1"
+	local filename="$2"
+
+	if [ "$version" == 'snapshot' ]; then
+		mkdir -p "$VADAS_TEMP_DIR"
+		echo "$VADAS_TEMP_DIR/$filename"
+	else
+		mkdir -p "$VADAS_CACHE_DIR"
+		echo "$VADAS_CACHE_DIR/$filename"
+	fi
 }
 
 function _get_image_url() {
@@ -1103,6 +1125,9 @@ function cmd_clean() {
 		_print_help clean
 		exit 0
 		;;
+	cache)
+		sub_cmd_clean_cache
+		;;
 	image|images)
 		sub_cmd_clean_images
 		;;
@@ -1206,6 +1231,7 @@ function cmd_env() {
 	esac
 
 	cat <<-EOF
+		VADAS_CACHE_DIR=$VADAS_CACHE_DIR
 		VADAS_CONFIG_DIR=$VADAS_CONFIG_DIR
 		VADAS_IMAGE_DIR=$VADAS_IMAGE_DIR
 		VADAS_TEMPLATE_DIR=$VADAS_TEMPLATE_DIR
@@ -1449,6 +1475,16 @@ function cmd_stop() {
 	fi
 }
 
+function sub_cmd_clean_cache() {
+	if [ -d "$VADAS_CACHE_DIR" ]; then
+		if _confirm "Are you sure you want to remove all files in '$VADAS_CACHE_DIR'?"; then
+			rm -rf "${VADAS_CACHE_DIR:?}"/*
+		fi
+	else
+		echo "Cache directory '$VADAS_CACHE_DIR' does not exist."
+	fi
+}
+
 function sub_cmd_clean_images() {
 	_ensure virsh
 
@@ -1477,7 +1513,6 @@ function sub_cmd_clean_images() {
 
 	if _confirm $'\n''Are you sure you want to remove these images?'; then
 		for img in "${unused_images[@]}"; do
-			echo "Removing '$img'..."
 			rm -f "$img"
 		done
 	fi
@@ -1486,7 +1521,6 @@ function sub_cmd_clean_images() {
 function sub_cmd_clean_temp() {
 	if [ -d "$VADAS_TEMP_DIR" ]; then
 		if _confirm "Are you sure you want to remove all files in '$VADAS_TEMP_DIR'?"; then
-			echo "Cleaning up '$VADAS_TEMP_DIR'..."
 			rm -rf "${VADAS_TEMP_DIR:?}"/*
 		fi
 	else
@@ -1752,7 +1786,8 @@ function sub_cmd_create_vm() {
 		_print_msg "Selected release: $version"
 
 		local target_list=("${TARGETS[@]}")
-		local targets_path="$VADAS_TEMP_DIR/openwrt-$version-targets.txt"
+		local targets_path
+		targets_path=$(_get_cached_file_path "$version" "openwrt-$version-targets.txt")
 		if _fetch_dir_list "$version" '' "$targets_path" 'targets'; then
 			local available_targets
 			available_targets=$(cat "$targets_path")
@@ -1762,7 +1797,8 @@ function sub_cmd_create_vm() {
 				local target="${t%%/*}"
 				local subtarget="${t#*/}"
 				if grep -qFw "$target" <<< "$available_targets"; then
-					local subtargets_path="$VADAS_TEMP_DIR/openwrt-$version-$target-subtargets.txt"
+					local subtargets_path
+					subtargets_path=$(_get_cached_file_path "$version" "openwrt-$version-$target-subtargets.txt")
 					if [[ "$fetched_subtargets" != *" $target "* ]]; then
 						_fetch_dir_list "$version" "$target" "$subtargets_path" "subtargets for $target"
 						fetched_subtargets+="$target "

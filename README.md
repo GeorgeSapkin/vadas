@@ -113,6 +113,7 @@ When no arguments are supplied, most commands are interactive.
 
 | Command | Description |
 |-:|:-|
+| `clean cache`                    | Clean up cache files. |
 | `clean images`                   | Remove disk images not used by any VM. |
 | `clean temp`                     | Remove temporary files. |
 | `env`                            | Display environment variables used by `vadas`. |
@@ -134,6 +135,7 @@ When no arguments are supplied, most commands are interactive.
 
 ## Environment Variables
 
+- `VADAS_CACHE_DIR`: Cache directory (default: `$HOME/.cache/vadas`).
 - `VADAS_CONFIG_DIR`: Configuration directory (default: `$HOME/.config/vadas`).
 - `VADAS_IMAGE_DIR`: Image storage directory (default: `$VADAS_CONFIG_DIR/images`).
 - `VADAS_TEMPLATE_DIR`: Template directory (default: `$VADAS_CONFIG_DIR/templates`).
