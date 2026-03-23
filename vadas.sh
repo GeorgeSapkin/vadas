@@ -595,7 +595,7 @@ function _fetch_checksums() {
 	url=$(_get_image_url "$version" "$target" '')
 
 	# Checksums are only used for releases so no need to check for snapshots
-	if [ ! -f "$checksums_path" ]; then
+	if _is_snapshot "$version" || [ ! -f "$checksums_path" ]; then
 		_print_msg -n 'Fetching image checksums...'
 		# Use a subshell with pipefail to catch curl errors
 		if ! ( set -o pipefail; curl -sf "$url" | \
@@ -620,7 +620,7 @@ function _fetch_dir_list() {
 	local url
 	url=$(_get_image_url "$version" "$target" '')
 
-	if [ "$version" == 'snapshot' ] || [ ! -f "$output_path" ]; then
+	if _is_snapshot "$version" || [ ! -f "$output_path" ]; then
 		_print_msg -n "Fetching $msg..."
 		if ! curl -sf "$url" |
 			grep 'class="n"' |
@@ -646,7 +646,7 @@ function _fetch_profiles() {
 	local url
 	url=$(_get_image_url "$version" "$target" 'profiles.json')
 
-	if [ "$version" == 'snapshot' ] || [ ! -f "$profiles_path" ]; then
+	if _is_snapshot "$version" || [ ! -f "$profiles_path" ]; then
 		_print_msg -n 'Fetching image profiles...'
 		if ! curl -sf -o "$profiles_path" "$url"; then
 			_print_msg ' failed.'
@@ -719,7 +719,7 @@ function _get_cached_file_path() {
 	local version="$1"
 	local filename="$2"
 
-	if [ "$version" == 'snapshot' ]; then
+	if _is_snapshot "$version"; then
 		mkdir -p "$VADAS_TEMP_DIR"
 		echo "$VADAS_TEMP_DIR/$filename"
 	else
@@ -1045,6 +1045,11 @@ function _interactive_menu() {
 	trap - INT TERM # Clear the trap
 
 	echo "${options[selected]}"
+}
+
+function _is_snapshot() {
+	local version="$1"
+	[[ "$version" == 'snapshot' || "$version" == *'-SNAPSHOT' ]]
 }
 
 function _print_msg() {
@@ -1763,6 +1768,11 @@ function sub_cmd_create_vm() {
 				fi
 			done
 			readarray -t point_releases < <(printf '%s\n' "${point_releases[@]}" | sort -rV)
+
+			# Show snapshots only for the newest two series
+			if [[ "$series" == "${mm_arr[0]}" || "$series" == "${mm_arr[1]}" ]]; then
+				point_releases=("${series}-SNAPSHOT" "${point_releases[@]}")
+			fi
 
 			version=$(_interactive_menu \
 				"Select a ${series} point release ${MENU_HELP_BACK}:" "${point_releases[@]}" \

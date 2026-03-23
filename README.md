@@ -7,7 +7,7 @@ their lifecycle.
 
 Vadas means commander, leader, or chief in Lithuanian.
 
-Supported OpenWrt versions: 21.02+ and snapshots
+Supported OpenWrt versions: 21.02+, release snapshots, and snapshots
 
 Supported architectures (depending on the availability in a release):
 
