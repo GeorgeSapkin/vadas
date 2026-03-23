@@ -221,7 +221,7 @@ function _vadas_sh_completion() {
 	local help_opts='--help -h'
 	local list_opts='images vm'
 	local ps_opts='--all'
-	local remove_opts='image network vm'
+	local remove_opts='network vm'
 	local show_opts='ip'
 	local stop_opts='--force'
 
@@ -248,15 +248,6 @@ function _vadas_sh_completion() {
 			;;
 		show)
 			COMPREPLY=( $(compgen -W "${show_opts} ${help_opts}" -- "${cur}") )
-			return 0
-			;;
-		image)
-			local parent="${COMP_WORDS[COMP_CWORD-2]}"
-			if [[ "${parent}" == 'remove' || "${parent}" == 'rm' ]]; then
-				local images
-				images=$(ls -1 "$VADAS_IMAGE_DIR" 2>/dev/null)
-				COMPREPLY=( $(compgen -W "${images}" -- "${cur}") )
-			fi
 			return 0
 			;;
 		vm)

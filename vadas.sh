@@ -100,7 +100,6 @@ function _print_help() {
 		<subcommand>
 
 		Subcommands:
-		  image           Remove a downloaded image
 		  network         Remove the virtual network
 		  vm              Remove a VM
 		EOF
@@ -1318,9 +1317,6 @@ function cmd_remove() {
 		_print_help remove
 		exit 0
 		;;
-	image)
-		sub_cmd_remove_image "$arg"
-		;;
 	network)
 		sub_cmd_remove_network
 		;;
@@ -1842,33 +1838,6 @@ function sub_cmd_list_images() {
 			echo "$ICON_OFF $(basename "$img")"
 		fi
 	done
-}
-
-function sub_cmd_remove_image() {
-	local image_name="$1"
-
-	if [ -z "$image_name" ]; then
-		local images
-		images=$(ls -1 "$VADAS_IMAGE_DIR" 2>/dev/null)
-		if [ -z "$images" ]; then
-			echo "No images found in $VADAS_IMAGE_DIR."
-			exit 1
-		fi
-
-		local options
-		readarray -t options <<< "$images"
-
-		image_name=$(_interactive_menu \
-			"Select an image to remove ${MENU_HELP_EXIT}:" "${options[@]}" \
-		)
-		[ $? -ne 0 ] && exit 0
-	fi
-
-	local image_path="$VADAS_IMAGE_DIR/$image_name"
-	if _confirm "Are you sure you want to remove image '$image_name'?"; then
-		echo "Removing image '$image_path'..."
-		rm -f "$image_path"
-	fi
 }
 
 function sub_cmd_remove_network() {

@@ -127,7 +127,6 @@ When no arguments are supplied, most commands are interactive.
 | `pause [<vm_name>]`              | Pause a running VM. |
 | `ps [--all]`                     | List running VMs. `--all` includes paused VMs. |
 | `resume [<vm_name>]`             | Resume a paused VM. |
-| `remove image [<image_name>]`    | Remove a downloaded disk image. |
 | `remove network`                 | Remove the `vadas` virtual network. |
 | `remove vm [<vm_name>]`          | Remove a VM and its associated storage. |
 | `show ip [<vm_name>]`            | Show the IP address of a VM. |
