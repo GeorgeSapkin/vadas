@@ -23,8 +23,8 @@ readonly VADAS_IMAGE_DIR="${VADAS_IMAGE_DIR:-${VADAS_CONFIG_DIR}/images}"
 readonly VADAS_TEMPLATE_DIR="${VADAS_TEMPLATE_DIR:-${VADAS_CONFIG_DIR}/templates}"
 readonly VADAS_TEMP_DIR="${VADAS_TEMP_DIR:-/tmp/vadas}"
 
-readonly MENU_HELP_BACK='(Enter to select, Esc to go back)'
-readonly MENU_HELP_EXIT='(Enter to select, Esc to exit)'
+readonly MENU_HELP_BACK='Enter to select, Esc to go back'
+readonly MENU_HELP_EXIT='Enter to select, Esc to exit'
 
 readonly MENU_ITEM_LIMIT=10
 
@@ -37,6 +37,15 @@ readonly VM_RAM=524288
 
 readonly ICON_ON='●'
 readonly ICON_OFF='○'
+
+readonly F_BLUE_BOLD=$'\e[1;34m'
+readonly F_BOLD=$'\e[1m'
+readonly F_DIM=$'\e[2m'
+readonly F_GREEN=$'\e[32m'
+readonly F_GREEN_BOLD=$'\e[1;32m'
+readonly F_RED=$'\e[31m'
+readonly F_RESET=$'\e[0m'
+readonly F_YELLOW=$'\e[33m'
 
 function _print_help() {
 	local cmd="$1"
@@ -176,15 +185,15 @@ function _confirm() {
 	local options
 
 	if [[ "$default" =~ ^[yY]$ ]]; then
-		options='[Y/n]'
-		read -r -p "$prompt $options " choice
+		options="[${F_BOLD}Y${F_RESET}/n]"
+		read -r -p $'\n'"${F_BOLD}${prompt}${F_RESET} ${options} " choice
 		case "$choice" in
 		[nN] | [nN][oO]) return 1 ;; # No
 		*) return 0 ;;               # Yes is default
 		esac
 	else
-		options='[y/N]'
-		read -r -p "$prompt $options " choice
+		options="[y/${F_BOLD}N${F_RESET}]"
+		read -r -p $'\n'"${F_BOLD}${prompt}${F_RESET} ${options} " choice
 		case "$choice" in
 		[yY] | [yY][eE][sS]) return 0 ;; # Yes
 		*) return 1 ;;                   # No is default
@@ -259,18 +268,19 @@ function _create_vm() {
 		local checksums_path
 		checksums_path=$(_get_cached_file_path "$version" "openwrt-$version-$target_flat-checksums.txt")
 		if ! _fetch_checksums "$version" "$target" "$checksums_path"; then
-			echo "Error: Failed to fetch checksums. The target '$target' may not be available for release '$version'."
+			echo "${F_RED}ERROR${F_RESET}: Failed to fetch checksums. The target '$target' may not be available for release '$version'."
 			exit 1
 		fi
 
 		local options=('ext4' 'squashfs')
 		local selected_image
 		selected_image=$(_interactive_menu \
-			"Select an image ${MENU_HELP_BACK}:" "${options[@]}" \
+			"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select an image:${F_RESET}" "${options[@]}" \
 		)
 		if [ $? -ne 0 ]; then
 			return 1
 		fi
+		echo "${F_GREEN_BOLD}Selected image:${F_RESET} $selected_image"
 
 		local file_prefix="openwrt-${version}-"
 		if [ "$version" == 'snapshot' ]; then
@@ -303,7 +313,7 @@ function _create_vm() {
 		local profiles_path
 		profiles_path=$(_get_cached_file_path "$version" "openwrt-$version-$target_flat-profiles.json")
 		if ! _fetch_profiles "$version" "$target" "$profiles_path"; then
-			echo "Error: Failed to fetch profiles. The target '$target' may not be available for release '$version'."
+			echo "${F_RED}ERROR${F_RESET} Failed to fetch profiles. The target '$target' may not be available for release '$version'."
 			exit 1
 		fi
 
@@ -335,7 +345,7 @@ function _create_vm() {
 		image_list=$(<<< "$profiles_json" jq -r "$image_query" | sort | uniq)
 
 		if [ -z "$image_list" ]; then
-			echo 'Error: No images found or failed to parse JSON.'
+			echo "${F_RED}ERROR${F_RESET}: No images found or failed to parse JSON."
 			exit 1
 		fi
 
@@ -344,11 +354,12 @@ function _create_vm() {
 
 		local selected_image
 		selected_image=$(_interactive_menu \
-			"Select an image ${MENU_HELP_BACK}:" "${options[@]}" \
+			"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select an image:${F_RESET}" "${options[@]}" \
 		)
 		if [ $? -ne 0 ]; then
 			return 1
 		fi
+		echo "${F_GREEN_BOLD}Selected image:${F_RESET} $selected_image"
 
 		local fs type
 		read -r fs type <<< "$selected_image"
@@ -364,7 +375,7 @@ function _create_vm() {
 		read -r image_filename image_sha256 <<<"$image_info"
 
 		if [ -z "$image_filename" ]; then
-			echo 'Error: Could not determine image filename for selection.'
+			echo "${F_RED}ERROR${F_RESET}: Could not determine image filename for selection."
 			exit 1
 		fi
 
@@ -462,10 +473,10 @@ function _create_vm() {
 	local ip
 	ip=$(_get_next_ip)
 	if [ -z "$ip" ]; then
-		echo 'Error: Failed to find an available IP address for the VM.' >&2
+		echo "${F_RED}ERROR${F_RESET}: Failed to find an available IP address for the VM." >&2
 		return 1
 	fi
-	echo "Allocated IP: $ip"
+	echo "${F_GREEN_BOLD}Allocated IP:${F_RESET} $ip"
 
 	local vm_xml
 	vm_xml=$(_render_template "$VADAS_TEMPLATE_DIR/$template.xml" \
@@ -488,7 +499,7 @@ function _create_vm() {
 		if [[ "$target" == malta/* ]]; then
 			# MIPS-specific as virsh doesn't preserve the slot definition
 			if ! virt-xml "$vm_name" --edit --network address.slot=0x12; then
-				echo 'Error: Failed to update network configuration.' >&2
+				echo "${F_RED}ERROR${F_RESET}: Failed to update network configuration." >&2
 				exit 1
 			fi
 		fi
@@ -516,7 +527,7 @@ function _define_vm() {
 	local tmp_xml="$VADAS_TEMP_DIR/${vm_name}.xml"
 	mkdir -p "$VADAS_TEMP_DIR"
 	echo "$vm_xml" > "$tmp_xml"
-	virsh define "$tmp_xml"
+	virsh define "$tmp_xml" | _trim_empty
 	local ret=$?
 	rm -f "$tmp_xml"
 	return $ret
@@ -531,12 +542,15 @@ function _download_image() {
 	local sha256="$3"
 
 	if [ -f "$path" ]; then
+		local filename
+		filename=$(basename "$path")
+
 		if [ -z "$sha256" ]; then
-			echo "File already exists, skipping download: $path"
+			echo "File already exists, skipping download: $filename"
 			return 0
 		fi
 
-		echo -n 'Local file found. Verifying checksum...'
+		echo -n "Verifying checksum of '$filename'..."
 		local local_sha
 		local_sha=$(sha256sum "$path" | awk '{print $1}')
 		if [ "$local_sha" == "$sha256" ]; then
@@ -548,7 +562,7 @@ function _download_image() {
 
 	echo "Downloading image from $url..."
 	if ! curl -L --progress-bar -o "$path" "$url"; then
-		echo 'Error: Download failed.'
+		echo "${F_RED}ERROR${F_RESET}: Download failed."
 		rm -f "$path"
 		exit 1
 	fi
@@ -568,7 +582,7 @@ function _download_image() {
 function _ensure() {
 	local cmd="$1"
 	if ! command -v "$cmd" >/dev/null 2>&1; then
-		echo "Error: '$cmd' command not found."
+		echo "${F_RED}ERROR${F_RESET}: '$cmd' command not found."
 		exit 1
 	fi
 }
@@ -579,7 +593,7 @@ function _ensure_net() {
 	local name="$1"
 
 	if ! virsh net-info "$name" >/dev/null 2>&1; then
-		echo "Error: Virtual network '$name' does not exist. Please create it first using '$(basename "$0") create network'." >&2
+		echo "${F_RED}ERROR${F_RESET}: Virtual network '$name' does not exist. Please create it first using '$(basename "$0") create network'." >&2
 		exit 1
 	fi
 }
@@ -684,9 +698,9 @@ function _format_vms_for_menu() {
 		local state
 		state=$(_get_vm_state "$vm")
 		if [ "$state" == 'running' ]; then
-			echo -e "\e[32m${ICON_ON}\e[0m $vm"
+			echo "${F_GREEN}${ICON_ON}${F_RESET} $vm"
 		elif [ "$state" == 'paused' ]; then
-			echo -e "\e[33m${ICON_ON}\e[0m $vm"
+			echo "${F_YELLOW}${ICON_ON}${F_RESET} $vm"
 		else
 			echo "$ICON_OFF $vm"
 		fi
@@ -820,7 +834,7 @@ function _get_used_images() {
 
 		<<< "$all_xml" xmllint --xpath '//kernel | //initrd | //loader | //nvram' - 2>/dev/null | \
 			sed 's/<[^>]*>/\n/g'
-	} | grep -v '^$' | sort -u
+	} | _trim_empty | sort -u
 }
 
 function _get_unique_vm_name() {
@@ -847,17 +861,18 @@ function _get_unique_vm_name() {
 
 	local new_name
 	while true; do
-		read -r -e -p 'VM name (allowed: alphanumeric, dot, dash): ' -i "$candidate" new_name >&2
+		echo -e "\n${F_DIM}Allowed characters: alphanumeric, dot, dash${F_RESET}" >&2
+		read -r -e -p "${F_BOLD}VM name${F_RESET}: " -i "$candidate" new_name >&2
 		if [ -z "$new_name" ]; then
-			echo 'Error: Name cannot be empty.' >&2
+			echo "${F_RED}ERROR${F_RESET}: Name cannot be empty." >&2
 			continue
 		fi
 		if [[ ! "$new_name" =~ ^[a-zA-Z0-9.-]+$ ]]; then
-			echo 'Error: Name must contain only alphanumeric characters, dots, and dashes.' >&2
+			echo "${F_RED}ERROR${F_RESET}: Name must contain only alphanumeric characters, dots, and dashes." >&2
 			continue
 		fi
 		if grep -qFx "$new_name" <<< "$existing_vms"; then
-			echo "Error: VM '$new_name' already exists." >&2
+			echo "${F_RED}ERROR${F_RESET}: VM '$new_name' already exists." >&2
 			base="$new_name"
 			counter=1
 			if [[ "$new_name" =~ ^(.*)-([0-9]+)$ ]]; then
@@ -884,7 +899,7 @@ function _get_vm_list() {
 	local state_flags
 	IFS=' ' read -r -a state_flags <<< "$@"
 	local vms
-	vms=$(virsh list "${state_flags[@]}" --name | grep .)
+	vms=$(virsh list "${state_flags[@]}" --name | _trim_empty)
 
 	for vm in $vms; do
 		if virsh metadata "$vm" --uri urn:vadas 2>/dev/null |
@@ -902,7 +917,7 @@ function _get_vm_state() {
 	local state
 	state=$(virsh domstate "$vm_name" 2>&1)
 	if [ $? -ne 0 ]; then
-		echo "Error: Unable to get state for '$vm_name':"
+		echo "${F_RED}ERROR${F_RESET}: Unable to get state for '$vm_name':"
 		echo "$state"
 		exit 1
 	fi
@@ -934,8 +949,6 @@ function _install_image_file() {
 			echo "Copying $name file..." >&2
 			cp "$src" "$dest" >&2
 		fi
-	else
-		echo 'Using existing file.' >&2
 	fi
 	echo "$name"
 }
@@ -946,7 +959,9 @@ function _interactive_menu() {
 	local options=("$@")
 	local selected=0
 	local count=${#options[@]}
-	local menu_height=$((MENU_ITEM_LIMIT + 1))
+	local prompt_lines
+	prompt_lines=$(echo -e "$prompt" | wc -l)
+	local menu_height=$((MENU_ITEM_LIMIT + prompt_lines))
 
 	# Hide cursor
 	stty -echo
@@ -971,7 +986,7 @@ function _interactive_menu() {
 
 			# Print prompt
 			tput el >&2
-			echo "$prompt" >&2
+			echo -e "${F_BOLD}${prompt}${F_RESET}" >&2
 
 			# Print items
 			for (( i=0; i<MENU_ITEM_LIMIT; i++ )); do
@@ -982,9 +997,9 @@ function _interactive_menu() {
 						local item="${options[idx]}"
 						if [[ "$item" == *"$ICON_ON"* ]]; then
 							# Preserve status indicator's color
-							item=$(sed 's/\x1b\[0m/\x1b[1;34m/g' <<< "$item")
+							item="${item//${F_RESET}/${F_BLUE_BOLD}}"
 						fi
-						echo -e "\e[1;34m> \e[0m${item}\e[0m" >&2
+						echo "${F_BLUE_BOLD}> ${item}${F_RESET}" >&2
 					else
 						echo "  ${options[idx]}" >&2
 					fi
@@ -1067,7 +1082,7 @@ function _read_octet() {
 	local max="$3"
 	local octet
 	while true; do
-		read -r -p "$prompt (range: $min-$max) [default: $min]: " octet
+		read -r -p "${F_BOLD}${prompt}${F_RESET} ${F_DIM}(${min}-${max})${F_RESET} [${F_BOLD}${min}${F_RESET}]: " octet
 		if [[ -z "$octet" ]]; then
 			octet="$min"
 		fi
@@ -1084,7 +1099,7 @@ function _render_template() {
 	local template="$1"
 	shift
 	if [ ! -f "$template" ]; then
-		echo "Error: Template '$template' not found." >&2
+		echo "${F_RED}ERROR${F_RESET}: Template '$template' not found." >&2
 		exit 1
 	fi
 	local content
@@ -1116,7 +1131,7 @@ function _select_vm() {
 
 	local selected_vm
 	selected_vm=$(_interactive_menu \
-		"Select a VM ${MENU_HELP_EXIT}:" \
+		"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select a VM:${F_RESET}" \
 		"${options[@]}" \
 	)
 	if [ $? -ne 0 ]; then
@@ -1124,6 +1139,10 @@ function _select_vm() {
 	fi
 
 	_clean_vm_name "$selected_vm"
+}
+
+function _trim_empty() {
+	sed '/^$/d'
 }
 
 function cmd_clean() {
@@ -1291,10 +1310,7 @@ function cmd_pause() {
 		exit 0
 	fi
 
-	if ! virsh suspend "$vm_name"; then
-		echo "Failed to pause '$vm_name'."
-		exit 1
-	fi
+	virsh suspend "$vm_name" | _trim_empty
 }
 
 function cmd_ps() {
@@ -1361,7 +1377,7 @@ function cmd_resume() {
 		exit 1
 	fi
 
-	if ! virsh resume "$vm_name"; then
+	if ! virsh resume "$vm_name" | _trim_empty; then
 		echo "Failed to resume '$vm_name'."
 		exit 1
 	fi
@@ -1429,7 +1445,7 @@ function cmd_start() {
 		;;
 	esac
 
-	if [ -n "$cmd" ] && ! virsh "$cmd" "$vm_name"; then
+	if [ -n "$cmd" ] && ! virsh "$cmd" "$vm_name" | _trim_empty; then
 		echo "Failed to $cmd '$vm_name'."
 		exit 1
 	fi
@@ -1471,12 +1487,12 @@ function cmd_stop() {
 	state=$(_get_vm_state "$vm_name")
 	if [ "$state" = 'running' ] || [ "$state" = 'paused' ]; then
 		if (( force == 1 )); then
-			virsh destroy "$vm_name"
+			virsh destroy "$vm_name" | _trim_empty
 		else
 			if [ "$state" = 'paused' ]; then
 				virsh resume "$vm_name" >/dev/null
 			fi
-			virsh shutdown "$vm_name"
+			virsh shutdown "$vm_name" | _trim_empty
 		fi
 	else
 		echo "'$vm_name' is $state."
@@ -1519,7 +1535,7 @@ function sub_cmd_clean_images() {
 		echo "$ICON_OFF $(basename "$img")"
 	done
 
-	if _confirm $'\n''Are you sure you want to remove these images?'; then
+	if _confirm 'Are you sure you want to remove these images?'; then
 		for img in "${unused_images[@]}"; do
 			rm -f "$img"
 		done
@@ -1553,7 +1569,7 @@ function sub_cmd_configure_vm() {
 	local state
 	state=$(_get_vm_state "$vm_name")
 	if [ "$state" != "running" ]; then
-		echo "Error: VM '$vm_name' is not running. Please start it first." >&2
+		echo "${F_RED}ERROR${F_RESET}: VM '$vm_name' is not running. Please start it first." >&2
 		exit 1
 	fi
 
@@ -1563,7 +1579,7 @@ function sub_cmd_configure_vm() {
 	netmask=$(<<< "$net_xml" xmllint --xpath 'string(//ip/@netmask)' -)
 
 	if [ -z "$gateway" ]; then
-		echo "Error: Could not parse network configuration for '$NET_NAME'." >&2
+		echo "${F_RED}ERROR${F_RESET}: Could not parse network configuration for '$NET_NAME'." >&2
 		exit 1
 	fi
 
@@ -1571,7 +1587,7 @@ function sub_cmd_configure_vm() {
 	vm_ip=$(_get_ip "$vm_name")
 
 	if [ -z "$vm_ip" ]; then
-		echo "Error: VM '$vm_name' does not have an assigned IP in metadata." >&2
+		echo "${F_RED}ERROR${F_RESET}: VM '$vm_name' does not have an assigned IP in metadata." >&2
 		exit 1
 	fi
 
@@ -1642,7 +1658,7 @@ function sub_cmd_create_network() {
 	_ensure virsh
 
 	if virsh net-info "$NET_NAME" >/dev/null 2>&1; then
-		echo "Error: Network '$NET_NAME' already exists."
+		echo "${F_RED}ERROR${F_RESET}: Network '$NET_NAME' already exists."
 		exit 1
 	fi
 
@@ -1651,7 +1667,7 @@ function sub_cmd_create_network() {
 		interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | sort)
 
 		if [ -z "$interfaces" ]; then
-			echo 'Error: No network interfaces found.'
+			echo "${F_RED}ERROR${F_RESET}: No network interfaces found."
 			exit 1
 		fi
 
@@ -1660,15 +1676,15 @@ function sub_cmd_create_network() {
 
 		local selected_iface
 		selected_iface=$(_interactive_menu \
-			"Select an interface ${MENU_HELP_EXIT}:" "${options[@]}" \
+			"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select an interface:${F_RESET}" "${options[@]}" \
 		)
 		[ $? -ne 0 ] && exit 0
-		echo "Selected interface: $selected_iface"
+		echo "${F_GREEN_BOLD}Selected interface:${F_RESET} $selected_iface"
 
 		while true; do
 			local selected_range
 			selected_range=$(_interactive_menu \
-				"Select a network range ${MENU_HELP_BACK}:" \
+				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a network range:${F_RESET}" \
 				"${NET_RANGES[@]}" \
 			)
 			if [ $? -ne 0 ]; then
@@ -1676,7 +1692,7 @@ function sub_cmd_create_network() {
 				tput el
 				break # go back to interface selection
 			fi
-			echo "Selected range: $selected_range"
+			echo "${F_GREEN_BOLD}Selected range:${F_RESET} $selected_range"
 
 			local ip_addr octet2 octet3
 			case "$selected_range" in
@@ -1696,8 +1712,8 @@ function sub_cmd_create_network() {
 				;;
 			esac
 
-			echo "Virtual gateway IP: $ip_addr"
-			echo "Virtual gateway netmask: $NET_MASK"
+			echo "${F_GREEN_BOLD}Virtual gateway IP:${F_RESET} $ip_addr"
+			echo "${F_GREEN_BOLD}Virtual gateway netmask:${F_RESET} $NET_MASK"
 
 			local ip_base="${ip_addr%.*}"
 			local net_xml
@@ -1712,9 +1728,9 @@ function sub_cmd_create_network() {
 			local tmp_xml="$VADAS_TEMP_DIR/$NET_NAME.xml"
 			mkdir -p "$VADAS_TEMP_DIR"
 			echo "$net_xml" > "$tmp_xml"
-			virsh net-define "$tmp_xml"
-			virsh net-start "$NET_NAME"
-			virsh net-autostart "$NET_NAME"
+			virsh net-define "$tmp_xml" | _trim_empty
+			virsh net-start "$NET_NAME" | _trim_empty
+			virsh net-autostart "$NET_NAME" | _trim_empty
 			rm -f "$tmp_xml"
 
 			return 0
@@ -1738,7 +1754,7 @@ function sub_cmd_create_vm() {
 	readarray -t releases < <(_fetch_releases)
 
 	if [ "${#releases[@]}" -eq 0 ]; then
-		echo 'Error: No releases found.'
+		echo "${F_RED}ERROR${F_RESET}: No releases found."
 		exit 1
 	fi
 
@@ -1753,7 +1769,7 @@ function sub_cmd_create_vm() {
 
 		local series
 		series=$(_interactive_menu \
-			"Select a release series ${MENU_HELP_EXIT}:" "${series_options[@]}" \
+			"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select a release series:${F_RESET}" "${series_options[@]}" \
 		)
 		[ $? -ne 0 ] && exit 0
 
@@ -1775,7 +1791,7 @@ function sub_cmd_create_vm() {
 			fi
 
 			version=$(_interactive_menu \
-				"Select a ${series} point release ${MENU_HELP_BACK}:" "${point_releases[@]}" \
+				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a ${series} point release:${F_RESET}" "${point_releases[@]}" \
 			)
 			if [ $? -ne 0 ]; then
 				continue
@@ -1783,7 +1799,7 @@ function sub_cmd_create_vm() {
 		fi
 
 		local lines_printed=0
-		_print_msg "Selected release: $version"
+		_print_msg "${F_GREEN_BOLD}Selected release:${F_RESET} $version"
 
 		local target_list=("${TARGETS[@]}")
 		local targets_path
@@ -1814,7 +1830,7 @@ function sub_cmd_create_vm() {
 		while true; do
 			local target
 			target=$(_interactive_menu \
-				"Select a target ${MENU_HELP_BACK}:" "${target_list[@]}" \
+				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a target:${F_RESET}" "${target_list[@]}" \
 			)
 			if [ $? -ne 0 ]; then
 				tput cuu "$lines_printed"
@@ -1822,7 +1838,7 @@ function sub_cmd_create_vm() {
 				break
 			fi
 			local lines_checkpoint=$lines_printed
-			_print_msg "Selected target: $target"
+			_print_msg "${F_GREEN_BOLD}Selected target:${F_RESET} $target"
 
 			if ! _create_vm "$version" "$target"; then
 				tput cuu $((lines_printed - lines_checkpoint))
@@ -1849,7 +1865,7 @@ function sub_cmd_list_images() {
 
 	for img in $all_images; do
 		if grep -qF "$img" <<< "$used_images"; then
-			echo -e "\e[32m${ICON_ON}\e[0m $(basename "$img")"
+			echo "${F_GREEN}${ICON_ON}${F_RESET} $(basename "$img")"
 		else
 			echo "$ICON_OFF $(basename "$img")"
 		fi
@@ -1867,8 +1883,7 @@ function sub_cmd_remove_network() {
 
 	local dependent_vms=''
 	local network vms
-	# filter out empty lines
-	vms=$(virsh list --all --name | grep .)
+	vms=$(virsh list --all --name | _trim_empty)
 	for vm in $vms; do
 		network=$(virsh dumpxml "$vm" 2>/dev/null |
 			xmllint --xpath "string(//interface/source[@network='$NET_NAME']/@network)" - 2>/dev/null)
@@ -1878,15 +1893,15 @@ function sub_cmd_remove_network() {
 	done
 
 	if [ -n "$dependent_vms" ]; then
-		echo -e "Error: The following VMs are using network '$NET_NAME':\n"
+		echo -e "${F_RED}ERROR${F_RESET}: The following VMs are using network '$NET_NAME':\n"
 		_format_vms_for_menu "${dependent_vms// /$'\n'}"
 		echo -e '\nPlease remove them before removing the network.'
 		exit 1
 	fi
 
 	if _confirm "Are you sure you want to remove network '$NET_NAME'?"; then
-		virsh net-destroy "$NET_NAME"
-		virsh net-undefine "$NET_NAME"
+		virsh net-destroy "$NET_NAME" | _trim_empty
+		virsh net-undefine "$NET_NAME" | _trim_empty
 	fi
 }
 
@@ -1901,16 +1916,16 @@ function sub_cmd_remove_vm() {
 	fi
 
 	if [ "$(_get_vm_state "$vm_name")" == 'running' ]; then
-		echo "WARNING: VM '$vm_name' is running!"
+		echo "${F_YELLOW}WARNING${F_RESET}: VM '$vm_name' is running!"
 		if ! _confirm 'Are you sure you want to force stop and remove it?'; then
 			return 0
 		fi
-		virsh destroy "$vm_name"
+		virsh destroy "$vm_name" | _trim_empty
 	elif ! _confirm "Are you sure you want to remove VM '$vm_name'?"; then
 		return 0
 	fi
 
-	virsh undefine "$vm_name" --nvram --remove-all-storage
+	virsh undefine "$vm_name" --nvram --remove-all-storage | _trim_empty
 }
 
 function sub_cmd_show_ip() {
@@ -1929,7 +1944,7 @@ function sub_cmd_show_ip() {
 	if [ -n "$vm_ip" ]; then
 		echo "$vm_ip"
 	else
-		echo "Error: No IP found in metadata for '$vm_name'." >&2
+		echo "${F_RED}ERROR${F_RESET}: No IP found in metadata for '$vm_name'." >&2
 		exit 1
 	fi
 }
