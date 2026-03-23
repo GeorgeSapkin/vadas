@@ -932,7 +932,7 @@ function _interactive_menu() {
 					if (( idx == selected )); then
 						local clean_item
 						clean_item=$(sed 's/\x1b\[[0-9;]*m//g' <<< "${options[idx]}" )
-						echo -e "\e[1;32m> ${clean_item}\e[0m" >&2
+						echo -e "\e[1;34m> ${clean_item}\e[0m" >&2
 					else
 						echo "  ${options[idx]}" >&2
 					fi
