@@ -1,0 +1,21 @@
+name: Test formalities
+
+on:
+  pull_request_target:
+
+permissions:
+  pull-requests: write
+
+jobs:
+  formalities:
+    name: Test formalities
+    runs-on: ubuntu-slim
+
+    steps:
+      - name: Run HyperStickler
+        uses: georgesapkin/hyperstickler@v1
+        with:
+          check_signoff: true
+          job_step: 2
+          post_comment: true
+          warn_on_no_modify: true
