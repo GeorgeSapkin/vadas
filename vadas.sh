@@ -15,6 +15,7 @@ readonly TARGETS=(
 )
 
 readonly OPENWRT_DOWNLOAD_URL='https://downloads.openwrt.org'
+readonly MIN_OPENWRT_VER=21
 
 readonly VADAS_CONFIG_DIR="${VADAS_CONFIG_DIR:-${HOME}/.config/vadas}"
 readonly VADAS_IMAGE_DIR="${VADAS_IMAGE_DIR:-${VADAS_CONFIG_DIR}/images}"
@@ -660,11 +661,10 @@ function _fetch_releases() {
 	fi
 	echo ' OK.' >&2
 
-	echo 'snapshot'
-	<<< "$json" jq -r '
+	<<< "$json" jq -r --argjson min_ver "$MIN_OPENWRT_VER" '
 		.versions_list[] |
 		select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) |
-		select(split(".")[0] | tonumber >= 23)
+		select(split(".")[0] | tonumber >= $min_ver)
 	'
 }
 
@@ -1714,11 +1714,40 @@ function sub_cmd_create_vm() {
 	fi
 
 	while true; do
-		local version
-		version=$(_interactive_menu \
-			"Select a release ${MENU_HELP_EXIT}:" "${releases[@]}" \
+		local series_options=('snapshot')
+		local major_minors
+		if [ "${#releases[@]}" -gt 0 ]; then
+			major_minors=$(printf '%s\n' "${releases[@]}" | cut -d. -f1,2 | sort -rV | uniq)
+			readarray -t mm_arr <<< "$major_minors"
+			series_options+=("${mm_arr[@]}")
+		fi
+
+		local series
+		series=$(_interactive_menu \
+			"Select a release series ${MENU_HELP_EXIT}:" "${series_options[@]}" \
 		)
 		[ $? -ne 0 ] && exit 0
+
+		local version
+		if [[ "$series" == 'snapshot' ]]; then
+			version='snapshot'
+		else
+			local point_releases=()
+			for r in "${releases[@]}"; do
+				if [[ "$r" == "$series".* ]]; then
+					point_releases+=("$r")
+				fi
+			done
+			readarray -t point_releases < <(printf '%s\n' "${point_releases[@]}" | sort -rV)
+
+			version=$(_interactive_menu \
+				"Select a ${series} point release ${MENU_HELP_BACK}:" "${point_releases[@]}" \
+			)
+			if [ $? -ne 0 ]; then
+				continue
+			fi
+		fi
+
 		local lines_printed=0
 		_print_msg "Selected release: $version"
 
