@@ -600,6 +600,33 @@ function _fetch_checksums() {
 	fi
 }
 
+function _fetch_dir_list() {
+	_ensure curl
+
+	local version="$1"
+	local target="$2"
+	local output_path="$3"
+	local msg="$4"
+
+	local url
+	url=$(_get_image_url "$version" "$target" '')
+
+	if [ "$version" == 'snapshot' ] || [ ! -f "$output_path" ]; then
+		_print_msg -n "Fetching $msg..."
+		if ! curl -sf "$url" |
+			grep 'class="n"' |
+			sed -n 's/.*href="\([^"]*\)\/".*/\1/p' |
+			grep -v '^\.\.$' |
+			sort -u > "$output_path"
+		then
+			_print_msg ' failed.'
+			rm -f "$output_path"
+			return 1
+		fi
+		_print_msg ' OK.'
+	fi
+}
+
 function _fetch_profiles() {
 	_ensure curl
 
@@ -1692,18 +1719,29 @@ function sub_cmd_create_vm() {
 			"Select a release ${MENU_HELP_EXIT}:" "${releases[@]}" \
 		)
 		[ $? -ne 0 ] && exit 0
+		local lines_printed=0
 		_print_msg "Selected release: $version"
 
 		local target_list=("${TARGETS[@]}")
-
-		local major_ver="${version%%.*}"
-		if [ "$major_ver" != 'snapshot' ] && (( major_ver <= 23 )); then
+		local targets_path="$VADAS_TEMP_DIR/openwrt-$version-targets.txt"
+		if _fetch_dir_list "$version" '' "$targets_path" 'targets'; then
+			local available_targets
+			available_targets=$(cat "$targets_path")
 			local filtered_targets=()
+			local fetched_subtargets=' '
 			for t in "${target_list[@]}"; do
-				if [[ "$t" == malta/* && "$t" != 'malta/be' ]]; then
-					continue
+				local target="${t%%/*}"
+				local subtarget="${t#*/}"
+				if grep -qFw "$target" <<< "$available_targets"; then
+					local subtargets_path="$VADAS_TEMP_DIR/openwrt-$version-$target-subtargets.txt"
+					if [[ "$fetched_subtargets" != *" $target "* ]]; then
+						_fetch_dir_list "$version" "$target" "$subtargets_path" "subtargets for $target"
+						fetched_subtargets+="$target "
+					fi
+					if [ -f "$subtargets_path" ] && grep -qFw "$subtarget" "$subtargets_path"; then
+						filtered_targets+=("$t")
+					fi
 				fi
-				filtered_targets+=("$t")
 			done
 			target_list=("${filtered_targets[@]}")
 		fi
@@ -1714,16 +1752,17 @@ function sub_cmd_create_vm() {
 				"Select a target ${MENU_HELP_BACK}:" "${target_list[@]}" \
 			)
 			if [ $? -ne 0 ]; then
-				tput cuu1
-				tput el
+				tput cuu "$lines_printed"
+				tput ed
 				break
 			fi
-			local lines_printed=0
+			local lines_checkpoint=$lines_printed
 			_print_msg "Selected target: $target"
 
 			if ! _create_vm "$version" "$target"; then
-				tput cuu "$lines_printed"
+				tput cuu $((lines_printed - lines_checkpoint))
 				tput ed
+				lines_printed=$lines_checkpoint
 				continue
 			fi
 			return 0
