@@ -42,6 +42,7 @@ This script requires the following tools to be installed:
 - `iproute2` (`ip`)
 - `jq`
 - `libvirt-client` (`virsh`)
+- `libxml2` (`xmllint`)
 - `openssh-clients` (`scp`)
 - `qemu-system-*` (e.g., `qemu-system-x86`, `qemu-system-aarch64`)
 - `virt-install` (`virt-xml`)

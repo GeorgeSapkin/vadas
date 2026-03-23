@@ -740,30 +740,25 @@ function _get_image_url() {
 	fi
 }
 
+function _get_ip() {
+	_ensure virsh
+	_ensure xmllint
+
+	local vm_name="$1"
+	virsh metadata "$vm_name" --uri urn:vadas 2>/dev/null |
+		xmllint --xpath "string(//*[local-name()='ip'])" -
+}
+
 function _get_next_ip() {
 	_ensure virsh
+	_ensure xmllint
 	_ensure_net "$NET_NAME"
 
-	local net_xml
+	local end_ip gateway net_xml start_ip
 	net_xml=$(virsh net-dumpxml "$NET_NAME")
-
-	local gateway
-	gateway=$(
-		<<< "$net_xml" grep '<ip address=' |
-		sed -n "s/.*address='\([^']*\)'.*/\1/p"
-	)
-
-	local start_ip
-	start_ip=$(
-		<<< "$net_xml" grep '<range start=' |
-		sed -n "s/.*start='\([^']*\)'.*/\1/p"
-	)
-
-	local end_ip
-	end_ip=$(
-		<<< "$net_xml" grep '<range start=' |
-		sed -n "s/.*end='\([^']*\)'.*/\1/p"
-	)
+	gateway=$(<<< "$net_xml" xmllint --xpath 'string(//ip/@address)' -)
+	start_ip=$(<<< "$net_xml" xmllint --xpath 'string(//range/@start)' -)
+	end_ip=$(<<< "$net_xml" xmllint --xpath 'string(//range/@end)' -)
 
 	if [ -z "$start_ip" ] || [ -z "$end_ip" ]; then
 		return 1
@@ -774,11 +769,7 @@ function _get_next_ip() {
 	vms=$(_get_vm_list --all)
 	for vm in $vms; do
 		local ip
-		ip=$(
-			virsh dumpxml "$vm" 2>/dev/null |
-			grep '<vadas:ip>' |
-			sed -n "s/.*<vadas:ip>\([^<]*\).*/\1/p"
-		)
+		ip=$(_get_ip "$vm")
 		if [ -n "$ip" ]; then
 			used_ips="$used_ips $ip"
 		fi
@@ -811,17 +802,26 @@ function _get_next_ip() {
 
 function _get_used_images() {
 	_ensure virsh
+	_ensure xmllint
 
-	virsh list --all --name |
-	while read -r vm; do
-		virsh dumpxml "$vm" 2>/dev/null |
-		sed -n \
-			-e "s/.*file='\([^']*\)'.*/\1/p" \
-			-e "s/.*<kernel[^>]*>\([^<]*\)<\/kernel>.*/\1/p" \
-			-e "s/.*<initrd[^>]*>\([^<]*\)<\/initrd>.*/\1/p" \
-			-e "s/.*<nvram[^>]*>\([^<]*\)<\/nvram>.*/\1/p" \
-			-e "s/.*<loader[^>]*>\([^<]*\)<\/loader>.*/\1/p"
-	done | sort | uniq
+	local all_xml
+	all_xml=$(
+		echo '<domains>'
+		virsh list --all --name | while read -r vm; do
+			[[ -n "$vm" ]] && virsh dumpxml "$vm" 2>/dev/null
+		done
+		echo '</domains>'
+	)
+
+	{
+		local disks
+		disks=$(<<< "$all_xml" xmllint --xpath '//source/@file' - 2>/dev/null)
+		disks="${disks// file=\"/$'\n'}"
+		echo "${disks//\"/}"
+
+		<<< "$all_xml" xmllint --xpath '//kernel | //initrd | //loader | //nvram' - 2>/dev/null | \
+			sed 's/<[^>]*>/\n/g'
+	} | grep -v '^$' | sort -u
 }
 
 function _get_unique_vm_name() {
@@ -888,8 +888,9 @@ function _get_vm_list() {
 	vms=$(virsh list "${state_flags[@]}" --name | grep .)
 
 	for vm in $vms; do
-		# --xpath filtering doesn't seem to work with namespaces
-		if virsh dumpxml "$vm" 2>/dev/null | grep -q '<vadas:ip>'; then
+		if virsh metadata "$vm" --uri urn:vadas 2>/dev/null |
+			grep -q 'tags'
+		then
 			echo "$vm"
 		fi
 	done
@@ -1531,6 +1532,7 @@ function sub_cmd_clean_temp() {
 function sub_cmd_configure_vm() {
 	_ensure expect
 	_ensure virsh
+	_ensure xmllint
 	_ensure_net "$NET_NAME"
 
 	local vm_name="$1"
@@ -1548,20 +1550,10 @@ function sub_cmd_configure_vm() {
 		exit 1
 	fi
 
-	local net_xml
+	local gateway net_xml netmask
 	net_xml=$(virsh net-dumpxml "$NET_NAME")
-
-	local gateway
-	gateway=$(
-		<<< "$net_xml" grep '<ip address=' |
-		sed -n "s/.*address='\([^']*\)'.*/\1/p"
-	)
-
-	local netmask
-	netmask=$(
-		<<< "$net_xml" grep '<ip address=' |
-		sed -n "s/.*netmask='\([^']*\)'.*/\1/p"
-	)
+	gateway=$(<<< "$net_xml" xmllint --xpath 'string(//ip/@address)' -)
+	netmask=$(<<< "$net_xml" xmllint --xpath 'string(//ip/@netmask)' -)
 
 	if [ -z "$gateway" ]; then
 		echo "Error: Could not parse network configuration for '$NET_NAME'." >&2
@@ -1569,11 +1561,7 @@ function sub_cmd_configure_vm() {
 	fi
 
 	local vm_ip
-	vm_ip=$(
-		virsh dumpxml "$vm_name" 2>/dev/null |
-		grep '<vadas:ip>' |
-		sed -n "s/.*<vadas:ip>\([^<]*\).*/\1/p"
-	)
+	vm_ip=$(_get_ip "$vm_name")
 
 	if [ -z "$vm_ip" ]; then
 		echo "Error: VM '$vm_name' does not have an assigned IP in metadata." >&2
@@ -1885,6 +1873,7 @@ function sub_cmd_remove_image() {
 
 function sub_cmd_remove_network() {
 	_ensure virsh
+	_ensure xmllint
 
 	if ! virsh net-info "$NET_NAME" >/dev/null 2>&1; then
 		echo "Network '$NET_NAME' not found."
@@ -1892,11 +1881,13 @@ function sub_cmd_remove_network() {
 	fi
 
 	local dependent_vms=''
-	local vms
+	local network vms
 	# filter out empty lines
 	vms=$(virsh list --all --name | grep .)
 	for vm in $vms; do
-		if virsh dumpxml "$vm" 2>/dev/null | grep -q "source network=['\"]${NET_NAME}['\"]"; then
+		network=$(virsh dumpxml "$vm" 2>/dev/null |
+			xmllint --xpath "string(//interface/source[@network='$NET_NAME']/@network)" - 2>/dev/null)
+		if [ -n "$network" ]; then
 			dependent_vms="$dependent_vms $vm"
 		fi
 	done
@@ -1939,6 +1930,7 @@ function sub_cmd_remove_vm() {
 
 function sub_cmd_show_ip() {
 	_ensure virsh
+	_ensure xmllint
 
 	local vm_name="$1"
 	if [ -z "$vm_name" ]; then
@@ -1947,11 +1939,7 @@ function sub_cmd_show_ip() {
 	fi
 
 	local vm_ip
-	vm_ip=$(
-		virsh dumpxml "$vm_name" 2>/dev/null |
-		grep '<vadas:ip>' |
-		sed -n "s/.*<vadas:ip>\([^<]*\).*/\1/p"
-	)
+	vm_ip=$(_get_ip "$vm_name")
 
 	if [ -n "$vm_ip" ]; then
 		echo "$vm_ip"

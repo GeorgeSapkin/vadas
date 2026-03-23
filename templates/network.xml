@@ -1,8 +1,7 @@
 <network>
   <name>{{NET_NAME}}</name>
   <metadata>
-    <vadas:tags xmlns:vadas="urn:vadas">
-    </vadas:tags>
+    <vadas:tags xmlns:vadas="urn:vadas" />
   </metadata>
   <forward mode='nat'>
     <interface dev='{{INTERFACE}}'/>
