@@ -1464,14 +1464,17 @@ function cmd_stop() {
 
 	local state
 	state=$(_get_vm_state "$vm_name")
-	if [ "$state" = 'running' ]; then
+	if [ "$state" = 'running' ] || [ "$state" = 'paused' ]; then
 		if (( force == 1 )); then
 			virsh destroy "$vm_name"
 		else
+			if [ "$state" = 'paused' ]; then
+				virsh resume "$vm_name" >/dev/null
+			fi
 			virsh shutdown "$vm_name"
 		fi
 	else
-		echo "'$vm_name' is not running."
+		echo "'$vm_name' is $state."
 	fi
 }
 
