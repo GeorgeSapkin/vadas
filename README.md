@@ -66,6 +66,21 @@ Vadas assumes a working libvirt and QEMU/KVM setup on a x86-64 host.
 make install
 ```
 
+Installs the main script into `~/.local/bin`. Ensure this directory is in path.
+
+Bash completion script is installed into `~/.local/share/bash-completion/completions`.
+
+Both of these paths can be adjusted by setting the following variables before
+calling the install script:
+
+```shell
+VADAS_BIN_DIR=~/.bin \
+VADAS_BASH_COMPLETION_DIR=~/.something/else \
+make install
+```
+
+The rest of the files are placed into `~/.config/vadas`.
+
 This has only be tested on a modern Linux with all the dependencies installed.
 It is highly unlikely this will work on a macOS without further modification.
 
@@ -143,6 +158,7 @@ When no arguments are supplied, most commands are interactive.
 - `VADAS_TEMPLATE_DIR`: Template directory (default: `$VADAS_CONFIG_DIR/templates`).
 - `VADAS_TEMP_DIR`: Temporary file directory (default: `/tmp/vadas`).
 
+These can be tweaked to change the paths, but this has not been tested.
 
 ## License
 
