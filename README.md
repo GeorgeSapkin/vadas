@@ -21,9 +21,9 @@ Supported architectures (depending on the availability in a release):
 
 - **Multi-Architecture**: Seamlessly creates VMs for x86-64, ARMv8, and MIPS,
   both for release versions and snapshots.
-- **Simplified Networking**: Automates OpenWrt network configuration (IP,
-  Gateway, DNS) via config injection through a serial console, so newly-created
-  VMs get internet access out of the box.
+- **Simplified Networking**: Automates OpenWrt network configuration (separate
+  WAN and LAN, IP, gateway, DNS) via config injection through a serial console,
+  so newly-created VMs get internet access out of the box.
 - **Image Management**: Automatically downloads, verifies, and caches official
   OpenWrt images; cleans up unused artifacts.
 - **Interactive CLI**: Menu-driven interface for ease of use, with Bash
@@ -86,7 +86,7 @@ It is highly unlikely this will work on a macOS without further modification.
 
 ## Usage
 
-First interactively create the virtual network:
+First interactively create the virtual WAN and LAN networks:
 
 ```shell
 vadas create network
@@ -94,8 +94,10 @@ vadas create network
 
 > [!NOTE]
 >
-> The network should be tied to a network adapter connected to the internet and
-> shouldn't overlap with any other network ranges that are in use.
+> WAN should be tied to a network adapter connected to the internet.
+>
+> Both networks shouldn't overlap with each other or any other network ranges
+> that are in use.
 
 Then interactively create a virtual machine:
 
@@ -135,7 +137,7 @@ When no arguments are supplied, most commands are interactive.
 | `env`                            | Display environment variables used by `vadas`. |
 | `configure vm [<vm_name>]`       | Automatically configure the network for a running VM via its console. |
 | `cp [-r] <src> ... <dest>`       | Copy files and directories to and from a VM. |
-| `create network`                 | Interactively create the `vadas` virtual network. |
+| `create network`                 | Interactively create the `vadas-wan` and `vadas-lan` virtual networks. |
 | `create pool`                    | Create the `vadas` storage pool. |
 | `create vm`                      | Interactively download an OpenWrt image and create a new VM. |
 | `list images`                    | List all downloaded disk images. |
@@ -143,7 +145,7 @@ When no arguments are supplied, most commands are interactive.
 | `pause [<vm_name>]`              | Pause a running VM. |
 | `ps [--all]`                     | List running VMs. `--all` includes paused VMs. |
 | `resume [<vm_name>]`             | Resume a paused VM. |
-| `remove network`                 | Remove the `vadas` virtual network. |
+| `remove network`                 | Remove the `vadas-wan` and `vadas-lan` virtual networks. |
 | `remove pool`                    | Remove the `vadas` storage pool. |
 | `remove vm [<vm_name>]`          | Remove a VM and its associated storage. |
 | `show ip [<vm_name>]`            | Show the IP address of a VM. |

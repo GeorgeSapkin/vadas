@@ -5,7 +5,8 @@
       <libosinfo:os id="http://libosinfo.org/linux/2024"/>
     </libosinfo:libosinfo>
     <vadas:tags xmlns:vadas="urn:vadas">
-      <vadas:ip>{{NET_IP}}</vadas:ip>
+      <vadas:wanip>{{NET_WAN_IP}}</vadas:wanip>
+      <vadas:lanip>{{NET_LAN_IP}}</vadas:lanip>
     </vadas:tags>
   </metadata>
   <memory unit='KiB'>262144</memory>
@@ -26,10 +27,16 @@
     <controller type='ide' index='0'/>
     <controller type='pci' index='0' model='pci-root'/>
     <interface type='network'>
-      <source network='{{NET_NAME}}'/>
+      <source network='{{NET_WAN_NAME}}'/>
       <model type='pcnet'/>
       <!-- Must be set manually -->
       <!-- <address type="pci" domain="0x0000" bus="0x00" slot="0x12" function="0x0"/> -->
+    </interface>
+    <interface type='network'>
+      <source network='{{NET_LAN_NAME}}'/>
+      <model type='pcnet'/>
+      <!-- Must be set manually -->
+      <!-- <address type="pci" domain="0x0000" bus="0x00" slot="0x13" function="0x0"/> -->
     </interface>
     <console type='pty'>
       <target type='serial' port='0'/>

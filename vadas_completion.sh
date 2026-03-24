@@ -46,7 +46,7 @@ function _comp_cp() {
 		if [[ "$cur" != */* && "$cur" != .* && "$cur" != ~* ]]; then
 			if command -v virsh >/dev/null 2>&1; then
 				local vms
-				vms=$(_get_vm_ids --state-running)
+				vms=$(_get_vm_list --state-running)
 				for vm in $vms; do
 					if [[ "$vm" == "${cur}"* ]]; then
 						vm_matches+=("${vm}:")
@@ -159,17 +159,19 @@ function _comp_vms() {
 	local state_flag="$1"
 	local extra_opts="$2"
 	local vm_ids
-	vm_ids=$(_get_vm_ids "$state_flag")
+	vm_ids=$(_get_vm_list "$state_flag")
 	COMPREPLY=( $(compgen -W "${vm_ids} ${extra_opts}" -- "${cur}") )
 }
 
-function _get_vm_ids() {
-	local state_flag="$1"
+function _get_vm_list() {
+	local state_flags="$*"
 	local vms
-	vms=$(virsh list "$state_flag" --name 2>/dev/null)
+	vms=$(virsh list $state_flags --name 2>/dev/null)
 
 	for vm in $vms; do
-		if virsh dumpxml "$vm" 2>/dev/null | grep -q '<vadas:ip>'; then
+		if virsh metadata "$vm" --uri urn:vadas 2>/dev/null |
+			grep -q 'tags'
+		then
 			echo "$vm"
 		fi
 	done
@@ -177,11 +179,9 @@ function _get_vm_ids() {
 
 function _get_vm_ip() {
 	local vm_name="$1"
-	virsh dumpxml "$vm_name" 2>/dev/null |
-		grep '<vadas:ip>' |
-		sed -n "s/.*<vadas:ip>\([^<]*\).*/\1/p"
+	virsh metadata "$vm_name" --uri urn:vadas 2>/dev/null |
+		xmllint --xpath "string(//*[local-name()='lanip'])" -
 }
-
 
 function _vadas_sh_completion() {
 	local cur prev opts vm_ids
@@ -252,7 +252,9 @@ function _vadas_sh_completion() {
 			;;
 		vm)
 			local parent="${COMP_WORDS[COMP_CWORD-2]}"
-			if [[ "${parent}" == 'remove' || "${parent}" == 'rm' || "${parent}" == 'configure' ]]; then
+			if [ "${parent}" == 'configure' ]; then
+				_comp_vms --state-running
+			else
 				_comp_vms --all
 			fi
 			return 0

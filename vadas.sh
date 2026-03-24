@@ -28,7 +28,8 @@ readonly MENU_HELP_EXIT='Enter to select, Esc to exit'
 
 readonly MENU_ITEM_LIMIT=10
 
-readonly NET_NAME='vadas'
+readonly NET_LAN_NAME='vadas-lan'
+readonly NET_WAN_NAME='vadas-wan'
 readonly NET_MASK='255.255.255.0'
 readonly NET_RANGES=('10.0.0.0/8' '172.16.0.0/12' '192.168.0.0/16')
 
@@ -75,7 +76,7 @@ function _print_help() {
 		<subcommand>
 
 		Subcommands:
-		  network         Interactively create the virtual network
+		  network         Interactively create the virtual networks
 		  pool            Create the storage pool
 		  vm              Interactively create a new VM
 		EOF
@@ -112,7 +113,7 @@ function _print_help() {
 		<subcommand>
 
 		Subcommands:
-		  network         Remove the virtual network
+		  network         Remove the virtual networks
 		  pool            Remove the storage pool
 		  vm              Remove a VM
 		EOF
@@ -182,6 +183,46 @@ function _clean_vm_name() {
 	<<< "$1" sed -e 's/\x1b\[[0-9;]*m//g' -e "s/^[${ICON_ON}${ICON_OFF}] //"
 }
 
+# This is going to be executed on the guest side
+function _configure_network_guest() {
+	local wan_ip="$1"
+	local wan_netmask="$2"
+	local wan_gateway="$3"
+	local lan_ip="$4"
+	local lan_netmask="$5"
+
+	uci batch <<-EOF
+	set network.wan=interface
+	set network.wan.device='eth0'
+	set network.wan.proto='static'
+	set network.wan.ipaddr='$wan_ip'
+	set network.wan.netmask='${wan_netmask:-255.255.255.0}'
+	add_list network.wan.dns='$wan_gateway'
+	set network.wan6.device='eth0'
+	set network.@device[0].ports='eth1'
+	set network.lan=interface
+	set network.lan.device='br-lan'
+	set network.lan.proto='static'
+	set network.lan.ipaddr='$lan_ip'
+	set network.lan.netmask='${lan_netmask:-255.255.255.0}'
+	set dhcp.lan.ignore='1'
+	commit dhcp
+	commit network
+	EOF
+
+	if ! uci show network | grep -q "target='0.0.0.0/0'"; then
+		uci batch <<-EOF
+		add network route
+		set network.@route[-1].interface='wan'
+		set network.@route[-1].target='0.0.0.0/0'
+		set network.@route[-1].gateway='$wan_gateway'
+		commit network
+		EOF
+	fi
+
+	service network restart
+}
+
 function _confirm() {
 	local prompt="$1"
 	local default="${2:-n}"
@@ -249,6 +290,114 @@ function _countdown() {
 
 	tput cnorm
 	trap - INT TERM
+}
+
+function _create_network() {
+	_ensure virsh
+
+	local name="$1"
+	local template="$2"
+	local needs_iface="${3:-0}"
+
+	if [ "$needs_iface" -eq 1 ]; then
+		_ensure ip
+	fi
+
+	if virsh net-info "$name" >/dev/null 2>&1; then
+		echo "${F_RED}ERROR${F_RESET}: Network '$name' already exists."
+		return 1
+	fi
+
+	echo "${F_GREEN_BOLD}Network name:${F_RESET} $name"
+
+	while true; do
+		local selected_iface=''
+		if [ "$needs_iface" -eq 1 ]; then
+			local interfaces
+			interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | sort)
+
+			if [ -z "$interfaces" ]; then
+				echo "${F_RED}ERROR${F_RESET}: No network interfaces found."
+				return 1
+			fi
+
+			local options
+			readarray -t options <<< "$interfaces"
+
+			selected_iface=$(_interactive_menu \
+				"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select a forwarding interface for ${name}:${F_RESET}" "${options[@]}" \
+			)
+			if [ $? -ne 0 ]; then
+				return 1
+			fi
+			echo "${F_GREEN_BOLD}Selected forwarding interface:${F_RESET} $selected_iface"
+		fi
+
+		while true; do
+			local selected_range
+			selected_range=$(_interactive_menu \
+				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a network range for ${name}:${F_RESET}" \
+				"${NET_RANGES[@]}" \
+			)
+			if [ $? -ne 0 ]; then
+				tput cuu1
+				tput el
+				if [ "$needs_iface" -eq 1 ]; then
+					break # go back to interface selection
+				else
+					return 1
+				fi
+			fi
+			echo "${F_GREEN_BOLD}Selected network range:${F_RESET} $selected_range"
+
+			local ip_addr octet2 octet3
+			case "$selected_range" in
+			'10.0.0.0/8')
+				octet2=$(_read_octet 'Enter second octet' 0 254)
+				octet3=$(_read_octet 'Enter third octet' 0 254)
+				ip_addr="10.$octet2.$octet3.1"
+				;;
+			'172.16.0.0/12')
+				octet2=$(_read_octet 'Enter second octet' 16 31)
+				octet3=$(_read_octet 'Enter third octet' 0 254)
+				ip_addr="172.$octet2.$octet3.1"
+				;;
+			'192.168.0.0/16')
+				octet3=$(_read_octet 'Enter third octet' 0 254)
+				ip_addr="192.168.$octet3.1"
+				;;
+			esac
+
+			echo "${F_GREEN_BOLD}Virtual gateway IP:${F_RESET} $ip_addr"
+			echo "${F_GREEN_BOLD}Virtual gateway netmask:${F_RESET} $NET_MASK"
+
+			local ip_base="${ip_addr%.*}"
+			local template_args=(
+				"NET_NAME"   "$name"
+				'IP_ADDR'    "$ip_addr"
+				'IP_START'   "${ip_base}.2"
+				'IP_END'     "${ip_base}.254"
+				'NET_MASK'   "$NET_MASK"
+			)
+
+			if [ -n "$selected_iface" ]; then
+				template_args+=('INTERFACE' "$selected_iface")
+			fi
+
+			local net_xml
+			net_xml=$(_render_template "$VADAS_TEMPLATE_DIR/$template" "${template_args[@]}")
+
+			local tmp_xml="$VADAS_TEMP_DIR/$name.xml"
+			mkdir -p "$VADAS_TEMP_DIR"
+			echo "$net_xml" > "$tmp_xml"
+			virsh net-define "$tmp_xml" | _trim_empty
+			virsh net-start "$name" | _trim_empty
+			virsh net-autostart "$name" | _trim_empty
+			rm -f "$tmp_xml"
+
+			return 0
+		done
+	done
 }
 
 function _create_pool() {
@@ -497,13 +646,21 @@ function _create_vm() {
 	local vm_name
 	vm_name=$(_get_unique_vm_name "$vm_base_name")
 
-	local ip
-	ip=$(_get_next_ip)
-	if [ -z "$ip" ]; then
-		echo "${F_RED}ERROR${F_RESET}: Failed to find an available IP address for the VM." >&2
+	local wan_ip
+	wan_ip=$(_get_next_ip wan "$NET_WAN_NAME")
+	if [ -z "$wan_ip" ]; then
+		echo "${F_RED}ERROR${F_RESET}: Failed to find an available WAN IP address for the VM." >&2
 		return 1
 	fi
-	echo "${F_GREEN_BOLD}Allocated IP:${F_RESET} $ip"
+	echo "${F_GREEN_BOLD}Allocated WAN IP:${F_RESET} $wan_ip"
+
+	local lan_ip
+	lan_ip=$(_get_next_ip lan "$NET_LAN_NAME")
+	if [ -z "$lan_ip" ]; then
+		echo "${F_RED}ERROR${F_RESET}: Failed to find an available LAN IP address for the VM." >&2
+		return 1
+	fi
+	echo "${F_GREEN_BOLD}Allocated LAN IP:${F_RESET} $lan_ip"
 
 	local vm_xml
 	vm_xml=$(_render_template "$VADAS_TEMPLATE_DIR/$template.xml" \
@@ -516,8 +673,10 @@ function _create_vm() {
 		'KERNEL'          "$kernel_path" \
 		'LOADER'          "$loader" \
 		'MACHINE'         "$machine" \
-		'NET_IP'          "$ip" \
-		'NET_NAME'        "$NET_NAME" \
+		'NET_LAN_IP'      "$lan_ip" \
+		'NET_LAN_NAME'    "$NET_LAN_NAME" \
+		'NET_WAN_IP'      "$wan_ip" \
+		'NET_WAN_NAME'    "$NET_WAN_NAME" \
 		'NVRAM_FILE'      "$nvram_file" \
 		'NVRAM_TEMPLATE'  "$nvram_template"
 	)
@@ -525,8 +684,18 @@ function _create_vm() {
 	if _define_vm "$vm_name" "$vm_xml"; then
 		if [[ "$target" == malta/* ]]; then
 			# MIPS-specific as virsh doesn't preserve the slot definition
-			if ! virt-xml "$vm_name" --edit --network address.slot=0x12; then
-				echo "${F_RED}ERROR${F_RESET}: Failed to update network configuration." >&2
+			if ! virt-xml "$vm_name" \
+				--edit "network,source=$NET_WAN_NAME" \
+				--network 'address.slot=0x12' >/dev/null
+			then
+				echo "${F_RED}ERROR${F_RESET}: Failed to update WAN network configuration." >&2
+				exit 1
+			fi
+			if ! virt-xml "$vm_name" \
+				--edit "network,source=$NET_LAN_NAME" \
+				--network 'address.slot=0x13' >/dev/null
+			then
+				echo "${F_RED}ERROR${F_RESET}: Failed to update LAN network configuration." >&2
 				exit 1
 			fi
 		fi
@@ -546,7 +715,6 @@ function _create_vm() {
 
 function _define_vm() {
 	_ensure virsh
-	_ensure_net "$NET_NAME"
 
 	local vm_name="$1"
 	local vm_xml="$2"
@@ -796,18 +964,24 @@ function _get_ip() {
 	_ensure virsh
 	_ensure xmllint
 
-	local vm_name="$1"
+	local type="$1" # wan or lan
+	local vm_name="$2"
+
 	virsh metadata "$vm_name" --uri urn:vadas 2>/dev/null |
-		xmllint --xpath "string(//*[local-name()='ip'])" -
+		xmllint --xpath "string(//*[local-name()='${type}ip'])" -
 }
 
 function _get_next_ip() {
 	_ensure virsh
 	_ensure xmllint
-	_ensure_net "$NET_NAME"
+
+	local type="$1" # wan or lan
+	local net_name="$2"
+
+	_ensure_net "$net_name"
 
 	local end_ip gateway net_xml start_ip
-	net_xml=$(virsh net-dumpxml "$NET_NAME")
+	net_xml=$(virsh net-dumpxml "$net_name")
 	gateway=$(<<< "$net_xml" xmllint --xpath 'string(//ip/@address)' -)
 	start_ip=$(<<< "$net_xml" xmllint --xpath 'string(//range/@start)' -)
 	end_ip=$(<<< "$net_xml" xmllint --xpath 'string(//range/@end)' -)
@@ -821,7 +995,7 @@ function _get_next_ip() {
 	vms=$(_get_vm_list --all)
 	for vm in $vms; do
 		local ip
-		ip=$(_get_ip "$vm")
+		ip=$(_get_ip "$type" "$vm")
 		if [ -n "$ip" ]; then
 			used_ips="$used_ips $ip"
 		fi
@@ -1249,9 +1423,9 @@ function cmd_cp() {
 		if [[ "$src" == *:* ]]; then
 			local vm_name="${src%%:*}"
 			local remote_path="${src#*:}"
-			local vm_ip
-			vm_ip=$(sub_cmd_show_ip "$vm_name") || exit 1
-			scp_sources+=("root@${vm_ip}:${remote_path}")
+			local lan_ip
+			lan_ip=$(_get_ip lan "$vm_name") || exit 1
+			scp_sources+=("root@${lan_ip}:${remote_path}")
 		else
 			scp_sources+=("$src")
 		fi
@@ -1261,9 +1435,9 @@ function cmd_cp() {
 	if [[ "$dest" == *:* ]]; then
 		local vm_name="${dest%%:*}"
 		local remote_path="${dest#*:}"
-		local vm_ip
-		vm_ip=$(sub_cmd_show_ip "$vm_name") || exit 1
-		scp_dest="root@${vm_ip}:${remote_path}"
+		local lan_ip
+		lan_ip=$(_get_ip lan "$vm_name") || exit 1
+		scp_dest="root@${lan_ip}:${remote_path}"
 	fi
 
 	scp -O $scp_opts \
@@ -1607,7 +1781,9 @@ function sub_cmd_configure_vm() {
 	_ensure expect
 	_ensure virsh
 	_ensure xmllint
-	_ensure_net "$NET_NAME"
+
+	_ensure_net "$NET_LAN_NAME"
+	_ensure_net "$NET_WAN_NAME"
 
 	local vm_name="$1"
 	local boot_wait="${2:-0}"
@@ -1624,20 +1800,25 @@ function sub_cmd_configure_vm() {
 		exit 1
 	fi
 
-	local gateway net_xml netmask
-	net_xml=$(virsh net-dumpxml "$NET_NAME")
-	gateway=$(<<< "$net_xml" xmllint --xpath 'string(//ip/@address)' -)
-	netmask=$(<<< "$net_xml" xmllint --xpath 'string(//ip/@netmask)' -)
+	local wan_gateway wan_netmask wan_xml
+	wan_xml=$(virsh net-dumpxml "$NET_WAN_NAME")
+	wan_gateway=$(<<< "$wan_xml" xmllint --xpath 'string(//ip/@address)' -)
+	wan_netmask=$(<<< "$wan_xml" xmllint --xpath 'string(//ip/@netmask)' -)
 
-	if [ -z "$gateway" ]; then
-		echo "${F_RED}ERROR${F_RESET}: Could not parse network configuration for '$NET_NAME'." >&2
+	if [ -z "$wan_gateway" ]; then
+		echo "${F_RED}ERROR${F_RESET}: Could not parse network configuration for '$NET_WAN_NAME'." >&2
 		exit 1
 	fi
 
-	local vm_ip
-	vm_ip=$(_get_ip "$vm_name")
+	local lan_netmask lan_xml
+	lan_xml=$(virsh net-dumpxml "$NET_WAN_NAME")
+	lan_netmask=$(<<< "$lan_xml" xmllint --xpath 'string(//ip/@netmask)' -)
 
-	if [ -z "$vm_ip" ]; then
+	local wan_ip lan_ip
+	wan_ip=$(_get_ip wan "$vm_name")
+	lan_ip=$(_get_ip lan "$vm_name")
+
+	if [ -z "$wan_ip" ]; then
 		echo "${F_RED}ERROR${F_RESET}: VM '$vm_name' does not have an assigned IP in metadata." >&2
 		exit 1
 	fi
@@ -1647,24 +1828,9 @@ function sub_cmd_configure_vm() {
 	fi
 
 	local cmds
-	cmds=$(cat <<-EOF
-	uci set network.lan=interface
-	uci set network.lan.device='br-lan'
-	uci set network.lan.proto='static'
-	uci set network.lan.ipaddr='$vm_ip'
-	uci set network.lan.netmask='${netmask:-255.255.255.0}'
-	uci set network.lan.ip6assign='60'
-	uci add_list network.lan.dns='$gateway'
-
-	uci add network route
-	uci set network.@route[-1].interface='lan'
-	uci set network.@route[-1].target='0.0.0.0/0'
-	uci set network.@route[-1].gateway='$gateway'
-
-	uci commit network
-	service network restart
-	EOF
-	)
+	cmds=$(declare -f _configure_network_guest)
+	cmds+=$'\n_configure_network_guest'
+	cmds+=" '$wan_ip' '$wan_netmask' '$wan_gateway' '$lan_ip' '$lan_netmask' >/dev/null"
 
 	expect <<-EOF
 	set cmds {$cmds}
@@ -1705,88 +1871,11 @@ function sub_cmd_configure_vm() {
 }
 
 function sub_cmd_create_network() {
-	_ensure ip
-	_ensure virsh
+	_create_network "$NET_WAN_NAME" 'net_wan.xml' 1
 
-	if virsh net-info "$NET_NAME" >/dev/null 2>&1; then
-		echo "${F_RED}ERROR${F_RESET}: Network '$NET_NAME' already exists."
-		exit 1
-	fi
+	echo
 
-	while true; do
-		local interfaces
-		interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | sort)
-
-		if [ -z "$interfaces" ]; then
-			echo "${F_RED}ERROR${F_RESET}: No network interfaces found."
-			exit 1
-		fi
-
-		local options
-		readarray -t options <<< "$interfaces"
-
-		local selected_iface
-		selected_iface=$(_interactive_menu \
-			"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select an interface:${F_RESET}" "${options[@]}" \
-		)
-		[ $? -ne 0 ] && exit 0
-		echo "${F_GREEN_BOLD}Selected interface:${F_RESET} $selected_iface"
-
-		while true; do
-			local selected_range
-			selected_range=$(_interactive_menu \
-				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a network range:${F_RESET}" \
-				"${NET_RANGES[@]}" \
-			)
-			if [ $? -ne 0 ]; then
-				tput cuu1
-				tput el
-				break # go back to interface selection
-			fi
-			echo "${F_GREEN_BOLD}Selected range:${F_RESET} $selected_range"
-
-			local ip_addr octet2 octet3
-			case "$selected_range" in
-			'10.0.0.0/8')
-				octet2=$(_read_octet 'Enter second octet' 0 254)
-				octet3=$(_read_octet 'Enter third octet' 0 254)
-				ip_addr="10.$octet2.$octet3.1"
-				;;
-			'172.16.0.0/12')
-				octet2=$(_read_octet 'Enter second octet' 16 31)
-				octet3=$(_read_octet 'Enter third octet' 0 254)
-				ip_addr="172.$octet2.$octet3.1"
-				;;
-			'192.168.0.0/16')
-				octet3=$(_read_octet 'Enter third octet' 0 254)
-				ip_addr="192.168.$octet3.1"
-				;;
-			esac
-
-			echo "${F_GREEN_BOLD}Virtual gateway IP:${F_RESET} $ip_addr"
-			echo "${F_GREEN_BOLD}Virtual gateway netmask:${F_RESET} $NET_MASK"
-
-			local ip_base="${ip_addr%.*}"
-			local net_xml
-			net_xml=$(_render_template "$VADAS_TEMPLATE_DIR/network.xml" \
-				'NET_NAME'   "$NET_NAME" \
-				'INTERFACE'  "$selected_iface" \
-				'IP_ADDR'    "$ip_addr" \
-				'IP_START'   "${ip_base}.2" \
-				'IP_END'     "${ip_base}.254" \
-				'NET_MASK'   "$NET_MASK"
-			)
-			local tmp_xml="$VADAS_TEMP_DIR/$NET_NAME.xml"
-			mkdir -p "$VADAS_TEMP_DIR"
-			echo "$net_xml" > "$tmp_xml"
-			virsh net-define "$tmp_xml" | _trim_empty
-			virsh net-start "$NET_NAME" | _trim_empty
-			virsh net-autostart "$NET_NAME" | _trim_empty
-			rm -f "$tmp_xml"
-
-			return 0
-		done
-	done
+	_create_network "$NET_LAN_NAME" 'net_lan.xml'
 }
 
 function sub_cmd_create_pool() {
@@ -1808,7 +1897,8 @@ function sub_cmd_create_vm() {
 	_ensure virsh
 	_ensure virt-xml
 
-	_ensure_net "$NET_NAME"
+	_ensure_net "$NET_LAN_NAME"
+	_ensure_net "$NET_WAN_NAME"
 
 	mkdir -p "$VADAS_TEMP_DIR"
 
@@ -1937,32 +2027,64 @@ function sub_cmd_remove_network() {
 	_ensure virsh
 	_ensure xmllint
 
-	if ! virsh net-info "$NET_NAME" >/dev/null 2>&1; then
-		echo "Network '$NET_NAME' not found."
-		return 0
-	fi
+	local networks=("$NET_WAN_NAME" "$NET_LAN_NAME")
+	local to_remove=()
+	declare -A vm_deps
 
-	local dependent_vms=''
-	local network vms
+	local vms
 	vms=$(virsh list --all --name | _trim_empty)
-	for vm in $vms; do
-		network=$(virsh dumpxml "$vm" 2>/dev/null |
-			xmllint --xpath "string(//interface/source[@network='$NET_NAME']/@network)" - 2>/dev/null)
-		if [ -n "$network" ]; then
-			dependent_vms="$dependent_vms $vm"
+
+	for net in "${networks[@]}"; do
+		if ! virsh net-info "$net" >/dev/null 2>&1; then
+			continue
 		fi
+
+		for vm in $vms; do
+			local network
+			network=$(virsh dumpxml "$vm" 2>/dev/null |
+				xmllint --xpath "string(//interface/source[@network='$net']/@network)" - 2>/dev/null)
+			if [ -n "$network" ]; then
+				if [ -n "${vm_deps[$vm]}" ]; then
+					vm_deps[$vm]="${vm_deps[$vm]}, $net"
+				else
+					vm_deps[$vm]="$net"
+				fi
+			fi
+		done
+
+		to_remove+=("$net")
 	done
 
-	if [ -n "$dependent_vms" ]; then
-		echo -e "${F_RED}ERROR${F_RESET}: The following VMs are using network '$NET_NAME':\n"
-		_format_vms_for_menu "${dependent_vms// /$'\n'}"
+	if [ ${#vm_deps[@]} -gt 0 ]; then
+		echo -e "${F_RED}ERROR${F_RESET}: The following VMs are using the networks to be removed:"$'\n'
+
+		local sorted_vms
+		sorted_vms=$(printf '%s\n' "${!vm_deps[@]}" | sort)
+
+		for vm in $sorted_vms; do
+			local state
+			state=$(_get_vm_state "$vm")
+			local icon="$ICON_OFF"
+			if [ "$state" == 'running' ]; then
+				icon="${F_GREEN}${ICON_ON}${F_RESET}"
+			elif [ "$state" == 'paused' ]; then
+				icon="${F_YELLOW}${ICON_ON}${F_RESET}"
+			fi
+			echo "$icon $vm (${vm_deps[$vm]})"
+		done
+
 		echo -e '\nPlease remove them before removing the network.'
 		exit 1
 	fi
 
-	if _confirm "Are you sure you want to remove network '$NET_NAME'?"; then
-		virsh net-destroy "$NET_NAME" | _trim_empty
-		virsh net-undefine "$NET_NAME" | _trim_empty
+	if [ ${#to_remove[@]} -gt 0 ]; then
+		local list_str="${to_remove[*]}"
+		if _confirm "Are you sure you want to remove network(s) '${list_str// /"', '"}'?"; then
+			for net in "${to_remove[@]}"; do
+				virsh net-destroy "$net" | _trim_empty
+				virsh net-undefine "$net" | _trim_empty
+			done
+		fi
 	fi
 }
 
@@ -2026,19 +2148,31 @@ function sub_cmd_show_ip() {
 	_ensure virsh
 	_ensure xmllint
 
+	_ensure_net "$NET_LAN_NAME"
+	_ensure_net "$NET_WAN_NAME"
+
 	local vm_name="$1"
 	if [ -z "$vm_name" ]; then
 		vm_name=$(_select_vm --all)
 		[ $? -ne 0 ] && exit 0
 	fi
 
-	local vm_ip
-	vm_ip=$(_get_ip "$vm_name")
+	local wan_ip
+	wan_ip=$(_get_ip wan "$vm_name")
 
-	if [ -n "$vm_ip" ]; then
-		echo "$vm_ip"
+	if [ -n "$wan_ip" ]; then
+		echo "WAN: $wan_ip"
 	else
-		echo "${F_RED}ERROR${F_RESET}: No IP found in metadata for '$vm_name'." >&2
+		echo "${F_RED}ERROR${F_RESET}: No WAN IP found in metadata for '$vm_name'." >&2
+		exit 1
+	fi
+
+	local lan_ip wan_ip
+	lan_ip=$(_get_ip lan "$vm_name")
+	if [ -n "$lan_ip" ]; then
+		echo "LAN: $lan_ip"
+	else
+		echo "${F_RED}ERROR${F_RESET}: No LAN IP found in metadata for '$vm_name'." >&2
 		exit 1
 	fi
 }

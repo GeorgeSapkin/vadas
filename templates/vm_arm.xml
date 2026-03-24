@@ -5,7 +5,8 @@
       <libosinfo:os id="http://libosinfo.org/linux/2024"/>
     </libosinfo:libosinfo>
     <vadas:tags xmlns:vadas="urn:vadas">
-      <vadas:ip>{{NET_IP}}</vadas:ip>
+      <vadas:wanip>{{NET_WAN_IP}}</vadas:wanip>
+      <vadas:lanip>{{NET_LAN_IP}}</vadas:lanip>
     </vadas:tags>
   </metadata>
   <memory unit='KiB'>{{VM_RAM}}</memory>
@@ -35,7 +36,11 @@
       <target dev='vda' bus='virtio'/>
     </disk>
     <interface type='network'>
-      <source network='{{NET_NAME}}'/>
+      <source network='{{NET_WAN_NAME}}'/>
+      <model type='virtio'/>
+    </interface>
+    <interface type='network'>
+      <source network='{{NET_LAN_NAME}}'/>
       <model type='virtio'/>
     </interface>
     <console type='pty'>

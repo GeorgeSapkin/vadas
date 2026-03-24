@@ -1,0 +1,11 @@
+<network>
+  <name>{{NET_NAME}}</name>
+  <metadata>
+    <vadas:tags xmlns:vadas="urn:vadas" />
+  </metadata>
+  <ip address='{{IP_ADDR}}' netmask='{{NET_MASK}}'>
+    <dhcp>
+      <range start='{{IP_START}}' end='{{IP_END}}'/>
+    </dhcp>
+  </ip>
+</network>
