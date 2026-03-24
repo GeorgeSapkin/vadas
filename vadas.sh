@@ -2185,8 +2185,10 @@ function sub_cmd_remove_vm() {
 		[ $? -ne 0 ] && exit 0
 	fi
 
-	if [ "$(_get_vm_state "$vm_name")" == 'running' ]; then
-		echo "${F_YELLOW}WARNING${F_RESET}: VM '$vm_name' is running!"
+	local state
+	state=$(_get_vm_state "$vm_name")
+	if [[ "$state" == 'running' || "$state" == 'paused' ]]; then
+		echo "${F_YELLOW}WARNING${F_RESET}: VM '$vm_name' is $state!"
 		if ! _confirm 'Are you sure you want to force stop and remove it?'; then
 			return 0
 		fi
