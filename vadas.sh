@@ -71,6 +71,13 @@ function _print_help() {
 		  vm [<vm_name>]  Configure VM's network
 		EOF
 		;;
+	connect)
+		cat <<-EOF
+		[<vm_name>]
+
+		Connect to the console of a running VM.
+		EOF
+		;;
 	create)
 		cat <<-EOF
 		<subcommand>
@@ -137,7 +144,7 @@ function _print_help() {
 		cat <<-EOF
 		[<vm_name>]
 
-		Start a VM and connect to its console.
+		Start a VM.
 		EOF
 		;;
 	stop)
@@ -161,10 +168,11 @@ function _print_help() {
 		  clean           Clean up resources (e.g., 'temp')
 
 		Resource management:
-		  start           Start a VM and connect to it
+		  start           Start a VM
 		  stop|kill       Stop a running VM (use --force for immediate stop)
 		  pause|suspend   Pause a running VM
 		  resume          Resume a paused VM
+		  connect         Connect to the console of a running VM
 		  cp              Copy files and directories to and from a VM
 		  ps              List running VMs (--all includes paused VMs)
 		  show            Show resource details (e.g., 'ip')
@@ -256,19 +264,49 @@ function _confirm_overwrite() {
 }
 
 function _connect_to_vm() {
+	_ensure expect
 	_ensure virsh
+
+	local quiet=0
+	if [ "$1" == '--quiet' ]; then
+		quiet=1
+		shift
+	fi
 
 	local vm_name="$1"
 	local boot_wait="${2:-0}"
 
-	if _confirm "Connect to console of '$vm_name'?"; then
+	if [ "$quiet" -eq 1 ] || _confirm "Connect to console of '$vm_name'?"; then
 		stty sane
-		echo 'Please press Enter to activate this console after connecting.'
-		if [ "$boot_wait" -ne 0 ]; then
-			_countdown "$boot_wait" \
-				'Waiting for VM to boot to avoid mangled console output...'
+		if [ "$quiet" -eq 0 ]; then
+			if [ "$boot_wait" -ne 0 ]; then
+				_countdown "$boot_wait" \
+					'Waiting for VM to boot to avoid mangled console output...'
+			fi
 		fi
-		virsh console "$vm_name"
+
+		# Here-doc breaks interact
+		expect -c "
+		set timeout 5
+		spawn virsh console $vm_name
+
+		expect {
+			\"Connected to domain\" { exp_continue }
+			\"Escape character is\" {
+				sleep 0.5
+				send \"\r\"
+			}
+			timeout { exit 1 }
+		}
+
+		expect {
+			-re \"root@.*#\" {}
+			timeout { exit 1 }
+		}
+
+		set timeout -1
+		interact
+		"
 	fi
 }
 
@@ -700,7 +738,7 @@ function _create_vm() {
 			fi
 		fi
 
-		cmd_start "$vm_name" --no-connect
+		cmd_start "$vm_name"
 
 		if _confirm "Configure network for '$vm_name'?" y; then
 			sub_cmd_configure_vm "$vm_name" "$boot_wait"
@@ -1400,6 +1438,31 @@ function cmd_configure() {
 	esac
 }
 
+function cmd_connect() {
+	_ensure virsh
+
+	local vm_name="$1"
+
+	case "$vm_name" in
+	--help|-h)
+		_print_help connect
+		exit 0
+		;;
+	esac
+
+	if [ -z "$vm_name" ]; then
+		vm_name=$(_select_vm --state-running)
+		[ $? -ne 0 ] && exit 0
+	fi
+
+	if [ "$(_get_vm_state "$vm_name")" != 'running' ]; then
+		echo "${F_RED}ERROR${F_RESET}: VM '$vm_name' is not running." >&2
+		exit 1
+	fi
+
+	_connect_to_vm --quiet "$vm_name" 0
+}
+
 function cmd_cp() {
 	_ensure scp
 	_ensure virsh
@@ -1632,16 +1695,11 @@ function cmd_start() {
 	_ensure virsh
 
 	local vm_name
-	local connect=1
-
 	for arg in "$@"; do
 		case "$arg" in
 		--help|-h)
 			_print_help start
 			exit 0
-			;;
-		--no-connect)
-			connect=0
 			;;
 		*)
 			if [ -z "$vm_name" ]; then
@@ -1666,18 +1724,14 @@ function cmd_start() {
 	'shut off')
 		cmd=start
 		;;
-	*)
-		;;
 	esac
 
-	if [ -n "$cmd" ] && ! virsh "$cmd" "$vm_name" | _trim_empty; then
-		echo "Failed to $cmd '$vm_name'."
+	if [ -z "$cmd" ]; then
+		echo "'$vm_name' is $state."
 		exit 1
 	fi
 
-	if [ "$connect" -eq 1 ]; then
-		_connect_to_vm "$vm_name"
-	fi
+	virsh "$cmd" "$vm_name" | _trim_empty
 }
 
 function cmd_stop() {
@@ -2179,6 +2233,7 @@ function sub_cmd_show_ip() {
 
 case "${1:-}" in
 clean)           cmd_clean "$2" ;;
+connect)         cmd_connect "${@:2}" ;;
 configure)       cmd_configure "${@:2}" ;;
 cp|copy)         cmd_cp "${@:2}" ;;
 create)          cmd_create "$2" ;;

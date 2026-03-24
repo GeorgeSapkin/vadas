@@ -112,7 +112,7 @@ network can be configure on the VM during the setup.
 Connect to the newly-create VM either during setup, or by doing:
 
 ```shell
-vadas start [<vm_name>]
+vadas connect [<vm_name>]
 ```
 
 If `vm_name` is not provided, you can select a VM from the list interactively.
@@ -144,6 +144,7 @@ When no arguments are supplied, most commands are interactive.
 | `clean temp`                     | Remove temporary files. |
 | `env`                            | Display environment variables used by `vadas`. |
 | `configure vm [<vm_name>]`       | Automatically configure the network for a running VM via its console. |
+| `connect [<vm_name>]`            | Connect to the console of a running VM. |
 | `cp [-r] <src> ... <dest>`       | Copy files and directories to and from a VM. |
 | `create network`                 | Interactively create the `vadas-wan` and `vadas-lan` virtual networks. |
 | `create pool`                    | Create the `vadas` storage pool. |
@@ -157,7 +158,7 @@ When no arguments are supplied, most commands are interactive.
 | `remove pool`                    | Remove the `vadas` storage pool. |
 | `remove vm [<vm_name>]`          | Remove a VM and its associated storage. |
 | `show ip [<vm_name>]`            | Show the IP address of a VM. |
-| `start [<vm_name>]`              | Start a VM and connect to its console. |
+| `start [<vm_name>]`              | Start a VM. |
 | `stop [<vm_name>] [--force]`     | Shut down a VM. `--force` will destroy it. |
 
 ## Environment Variables

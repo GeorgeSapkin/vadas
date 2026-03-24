@@ -199,6 +199,7 @@ function _vadas_sh_completion() {
 	opts='
 		clean
 		configure
+		connect
 		cp
 		create
 		env
@@ -232,6 +233,10 @@ function _vadas_sh_completion() {
 			;;
 		configure)
 			COMPREPLY=( $(compgen -W "${configure_opts} ${help_opts}" -- "${cur}") )
+			return 0
+			;;
+		connect)
+			_comp_vms --state-running "${help_opts}"
 			return 0
 			;;
 		create)
