@@ -92,7 +92,7 @@ function _print_help() {
 		;;
 	cp|copy)
 		cat <<-EOF
-		[-r] <source> <destination>
+		[-r] <source> ... <destination>
 
 		Copy files and directories to and from a VM.
 		Source or destination can be a local path or <vm_name>:[<remote_path>].
@@ -1236,21 +1236,26 @@ function cmd_cp() {
 		shift
 	fi
 
-	local src="$1"
-	local dest="$2"
-	if [ -z "$src" ] || [ -z "$dest" ]; then
+	if [ "$#" -lt 2 ]; then
 		_print_help cp
 		exit 1
 	fi
 
-	local scp_src="$src"
-	if [[ "$src" == *:* ]]; then
-		local vm_name="${src%%:*}"
-		local remote_path="${src#*:}"
-		local vm_ip
-		vm_ip=$(sub_cmd_show_ip "$vm_name") || exit 1
-		scp_src="root@${vm_ip}:${remote_path}"
-	fi
+	local dest="${!#}"
+	local sources=("${@:1:$#-1}")
+	local scp_sources=()
+
+	for src in "${sources[@]}"; do
+		if [[ "$src" == *:* ]]; then
+			local vm_name="${src%%:*}"
+			local remote_path="${src#*:}"
+			local vm_ip
+			vm_ip=$(sub_cmd_show_ip "$vm_name") || exit 1
+			scp_sources+=("root@${vm_ip}:${remote_path}")
+		else
+			scp_sources+=("$src")
+		fi
+	done
 
 	local scp_dest="$dest"
 	if [[ "$dest" == *:* ]]; then
@@ -1265,7 +1270,7 @@ function cmd_cp() {
 		-o LogLevel=ERROR \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
-		"$scp_src" "$scp_dest"
+		"${scp_sources[@]}" "$scp_dest"
 }
 
 function cmd_create() {

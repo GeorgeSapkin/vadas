@@ -119,7 +119,7 @@ When no arguments are supplied, most commands are interactive.
 | `clean temp`                     | Remove temporary files. |
 | `env`                            | Display environment variables used by `vadas`. |
 | `configure vm [<vm_name>]`       | Automatically configure the network for a running VM via its console. |
-| `cp [-r] <src> <dest>`           | Copy files and directories to and from a VM. |
+| `cp [-r] <src> ... <dest>`       | Copy files and directories to and from a VM. |
 | `create network`                 | Interactively create the `vadas` virtual network. |
 | `create pool`                    | Create the `vadas` storage pool. |
 | `create vm`                      | Interactively download an OpenWrt image and create a new VM. |
