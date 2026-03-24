@@ -1,5 +1,7 @@
 # Vadas
 
+![Vadas](./assets/screenshot.png)
+
 Vadas is a command-line tool for managing OpenWrt virtual machines using
 QEMU/KVM and libvirt. It simplifies the process of downloading official OpenWrt
 images, creating, and configuring VMs for various architectures, and managing
@@ -118,6 +120,12 @@ If `vm_name` is not provided, you can select a VM from the list interactively.
 > [!NOTE]
 >
 > Press `Ctrl+]` to exit the console connection to a VM.
+
+## Demo
+
+![Vadas](./assets/demo.gif)
+
+[Longer demo on YouTube](https://www.youtube.com/watch?v=-uD7iaaJeXQ)
 
 ## CLI reference
 
