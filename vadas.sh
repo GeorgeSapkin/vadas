@@ -93,6 +93,7 @@ function _print_help() {
 		<subcommand>
 
 		Subcommands:
+		  all             Run all clean commands
 		  cache           Clean up cache files
 		  images          Clean up unused disk images
 		  temp            Clean up temporary files
@@ -120,6 +121,7 @@ function _print_help() {
 		<subcommand>
 
 		Subcommands:
+		  all             Remove all VMs, networks, and the storage pool
 		  network         Remove the virtual networks
 		  pool            Remove the storage pool
 		  vm              Remove a VM
@@ -1404,6 +1406,9 @@ function cmd_clean() {
 		_print_help clean
 		exit 0
 		;;
+	all)
+		sub_cmd_clean_all
+		;;
 	cache)
 		sub_cmd_clean_cache
 		;;
@@ -1626,6 +1631,9 @@ function cmd_remove() {
 		_print_help remove
 		exit 0
 		;;
+	all)
+		sub_cmd_remove_all
+		;;
 	network)
 		sub_cmd_remove_network
 		;;
@@ -1776,6 +1784,12 @@ function cmd_stop() {
 	else
 		echo "'$vm_name' is $state."
 	fi
+}
+
+function sub_cmd_clean_all() {
+	sub_cmd_clean_cache
+	sub_cmd_clean_images
+	sub_cmd_clean_temp
 }
 
 function sub_cmd_clean_cache() {
@@ -2075,6 +2089,42 @@ function sub_cmd_list_images() {
 			echo "$ICON_OFF $(basename "$img")"
 		fi
 	done
+}
+
+function sub_cmd_remove_all() {
+	_ensure virsh
+
+	echo -e "${F_RED}${F_BOLD}WARNING: This will delete ALL Vadas VMs, networks, and the storage pool.${F_RESET}\n"
+
+	local vms
+	vms=$(_get_vm_list --all)
+	_format_vms_for_menu "$vms"
+
+	if ! _confirm 'Are you sure you want to proceed? This cannot be undone.'; then
+		return 0
+	fi
+
+	for vm in $vms; do
+		local state
+		state=$(_get_vm_state "$vm")
+		if [[ "$state" == 'running' || "$state" == 'paused' ]]; then
+			virsh destroy "$vm" | _trim_empty
+		fi
+		virsh undefine "$vm" --nvram --remove-all-storage | _trim_empty
+	done
+
+	local networks=("$NET_WAN_NAME" "$NET_LAN_NAME")
+	for net in "${networks[@]}"; do
+		if virsh net-info "$net" >/dev/null 2>&1; then
+			virsh net-destroy "$net" | _trim_empty
+			virsh net-undefine "$net" | _trim_empty
+		fi
+	done
+
+	if virsh pool-info "$POOL_NAME" >/dev/null 2>&1; then
+		virsh pool-destroy "$POOL_NAME" | _trim_empty
+		virsh pool-undefine "$POOL_NAME" | _trim_empty
+	fi
 }
 
 function sub_cmd_remove_network() {

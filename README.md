@@ -139,6 +139,7 @@ When no arguments are supplied, most commands are interactive.
 
 | Command | Description |
 |-:|:-|
+| `clean all`                      | Run all clean commands. |
 | `clean cache`                    | Clean up cache files. |
 | `clean images`                   | Remove disk images not used by any VM. |
 | `clean temp`                     | Remove temporary files. |
@@ -154,6 +155,7 @@ When no arguments are supplied, most commands are interactive.
 | `pause [<vm_name>]`              | Pause a running VM. |
 | `ps [--all]`                     | List running VMs. `--all` includes paused VMs. |
 | `resume [<vm_name>]`             | Resume a paused VM. |
+| `remove all`                     | Remove all VMs, networks, and the storage pool. |
 | `remove network`                 | Remove the `vadas-wan` and `vadas-lan` virtual networks. |
 | `remove pool`                    | Remove the `vadas` storage pool. |
 | `remove vm [<vm_name>]`          | Remove a VM and its associated storage. |

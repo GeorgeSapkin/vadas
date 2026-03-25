@@ -216,13 +216,13 @@ function _vadas_sh_completion() {
 		stop
 		suspend
 	'
-	local clean_opts='cache images temp'
+	local clean_opts='all cache images temp'
 	local configure_opts='vm'
 	local create_opts='network pool vm'
 	local help_opts='--help -h'
 	local list_opts='images vm'
 	local ps_opts='--all'
-	local remove_opts='network pool vm'
+	local remove_opts='all network pool vm'
 	local show_opts='ip'
 	local stop_opts='--force'
 
