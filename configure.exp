@@ -1,0 +1,59 @@
+set vm_name [lindex $argv 0]
+set cmds    [lindex $argv 1]
+
+set FAILED_MSG "Failed to configure network. Try to configure again once the VM is fully booted."
+
+set timeout 10
+spawn virsh console $vm_name
+
+expect {
+    "Connected to domain" { exp_continue }
+    "Escape character is" {
+        sleep 0.5
+        send "\r"
+    }
+    timeout { exit 1 }
+}
+
+set timeout 60
+set none_retry 0
+expect {
+    "Please press Enter to activate this console" {
+        send "\r"
+        exp_continue
+    }
+    -re {root@[(]none[)].*#} {
+        if { $none_retry >= 10 } {
+            send_user "$FAILED_MSG"
+            exit 1
+        }
+        incr none_retry
+        sleep 0.1
+        # Remove bad prompts
+        send_user "\x1b\[1A\x1b\[K\r"
+        send "\r"
+        sleep 2
+        exp_continue
+    }
+    -re "root@OpenWrt.*#" {}
+    timeout {
+        send_user "$FAILED_MSG"
+        exit 1
+    }
+}
+
+set timeout 5
+foreach line [split $cmds "\n"] {
+    set clean_line [string trim $line]
+    if {$clean_line ne ""} {
+        send "$clean_line\r"
+    }
+}
+
+set timeout 30
+expect "br-lan: port 1(eth1) entered forwarding state"
+
+set timeout 10
+sleep 0.5
+send "\x1d"
+expect eof

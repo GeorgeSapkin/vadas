@@ -30,18 +30,23 @@ install_templates_dev: templates/*.xml
 	ln -s $(PWD)/templates $(VADAS_CONFIG_DIR)
 
 .PHONY: install
-install: check_deps clean install_templates vadas.sh vadas_completion.sh
+install: check_deps clean install_templates *.exp vadas.sh vadas_completion.sh
 	$(info Installing release version:)
 	mkdir -p $(VADAS_BIN_DIR)
+	mkdir -p $(VADAS_CONFIG_DIR)
 	mkdir -p $(VADAS_BASH_COMPLETION_DIR)
+	cp $(PWD)/*.exp $(VADAS_CONFIG_DIR)
 	cp $(PWD)/vadas.sh $(VADAS_BIN_DIR)/vadas
 	cp $(PWD)/vadas_completion.sh $(VADAS_BASH_COMPLETION_DIR)/vadas
 
 .PHONY: install_dev
-install_dev: check_deps clean install_templates_dev vadas.sh vadas_completion.sh
+install_dev: check_deps clean install_templates_dev *.exp vadas.sh vadas_completion.sh
 	$(info Installing development version:)
 	mkdir -p $(VADAS_BIN_DIR)
+	mkdir -p $(VADAS_CONFIG_DIR)
 	mkdir -p $(VADAS_BASH_COMPLETION_DIR)
+	ln -s $(PWD)/configure.exp $(VADAS_CONFIG_DIR)/configure.exp
+	ln -s $(PWD)/connect.exp $(VADAS_CONFIG_DIR)/connect.exp
 	ln -s $(PWD)/vadas.sh $(VADAS_BIN_DIR)/vadas
 	ln -s $(PWD)/vadas_completion.sh $(VADAS_BASH_COMPLETION_DIR)/vadas
 
@@ -50,4 +55,5 @@ clean:
 	$(info Cleaning up)
 	rm -rf $(VADAS_TEMPLATE_DIR)
 	rm -f $(VADAS_BIN_DIR)/vadas
+	rm -f $(VADAS_CONFIG_DIR)/*.exp
 	rm -f $(VADAS_BASH_COMPLETION_DIR)/vadas

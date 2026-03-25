@@ -1,0 +1,26 @@
+set vm_name [lindex $argv 0]
+
+set timeout 10
+spawn virsh console $vm_name
+
+expect {
+    "Connected to domain" { exp_continue }
+    "Escape character is" {
+        sleep 0.5
+        send "\r"
+    }
+    timeout { exit 1 }
+}
+
+set timeout 60
+expect {
+    "Please press Enter to activate this console" {
+        send "\r"
+        exp_continue
+    }
+    -re "root@.*#" {}
+    timeout { exit 1 }
+}
+
+set timeout -1
+interact

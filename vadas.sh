@@ -287,28 +287,7 @@ function _connect_to_vm() {
 			fi
 		fi
 
-		# Here-doc breaks interact
-		expect -c "
-		set timeout 5
-		spawn virsh console $vm_name
-
-		expect {
-			\"Connected to domain\" { exp_continue }
-			\"Escape character is\" {
-				sleep 0.5
-				send \"\r\"
-			}
-			timeout { exit 1 }
-		}
-
-		expect {
-			-re \"root@.*#\" {}
-			timeout { exit 1 }
-		}
-
-		set timeout -1
-		interact
-		"
+		expect "$VADAS_CONFIG_DIR/connect.exp" "$vm_name"
 	fi
 }
 
@@ -644,7 +623,7 @@ function _create_vm() {
 	case "$target" in
 	armsr/armv8)
 		arch='aarch64'
-		boot_wait=40
+		boot_wait=20
 		loader='/usr/share/edk2/aarch64/QEMU_EFI-silent-pflash.qcow2'
 		machine='virt'
 		nvram_file="$VADAS_IMAGE_DIR/$(basename "$image_path" .img).nvram"
@@ -655,25 +634,25 @@ function _create_vm() {
 	malta/be)
 		arch='mips'
 		qemu_bin='/usr/bin/qemu-system-mips'
-		boot_wait=30
+		boot_wait=10
 		template=vm_malta
 		;;
 	malta/le)
 		arch='mipsel'
 		qemu_bin='/usr/bin/qemu-system-mipsel'
-		boot_wait=30
+		boot_wait=10
 		template=vm_malta
 		;;
 	x86/64)
 		arch='x86_64'
-		boot_wait=15
+		boot_wait=5
 		machine='q35'
 		qemu_bin='/usr/bin/qemu-system-x86_64'
 		template=vm_x86
 		;;
 	x86/generic)
 		arch='i686'
-		boot_wait=15
+		boot_wait=5
 		machine='pc'
 		qemu_bin='/usr/bin/qemu-system-i386'
 		template=vm_x86
@@ -1855,7 +1834,6 @@ function sub_cmd_configure_vm() {
 
 	local vm_name="$1"
 	local boot_wait="${2:-0}"
-	local sleep_time="${3:-0.5}"
 	if [ -z "$vm_name" ]; then
 		vm_name=$(_select_vm --all)
 		[ $? -ne 0 ] && exit 0
@@ -1900,42 +1878,7 @@ function sub_cmd_configure_vm() {
 	cmds+=$'\n_configure_network_guest'
 	cmds+=" '$wan_ip' '$wan_netmask' '$wan_gateway' '$lan_ip' '$lan_netmask' >/dev/null"
 
-	expect <<-EOF
-	set cmds {$cmds}
-
-	set timeout 30
-	spawn virsh console $vm_name
-
-	expect {
-		"Connected to domain" { exp_continue }
-		"Escape character is" {
-			sleep 0.5
-			send "\r"
-		}
-		timeout { exit 1 }
-	}
-
-	sleep $sleep_time
-	send "\r"
-
-	expect {
-		-re "root@.*#" {}
-		timeout { exit 1 }
-	}
-
-	foreach line [split \$cmds "\n"] {
-		if {\$line ne ""} {
-			send "\$line\r"
-			sleep 0.1
-		}
-	}
-
-	expect "br-lan: port 1(eth1) entered forwarding state"
-
-	sleep 0.5
-	send "\x1d"
-	expect eof
-	EOF
+	expect "$VADAS_CONFIG_DIR/configure.exp" "$vm_name" "$cmds"
 }
 
 function sub_cmd_create_network() {
