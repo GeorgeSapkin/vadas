@@ -1141,8 +1141,13 @@ function _get_vm_list() {
 
 	local state_flags
 	IFS=' ' read -r -a state_flags <<< "$@"
+
+	# virsh list can't handle multiple states when shutoff is specified
 	local vms
-	vms=$(virsh list "${state_flags[@]}" --name | _trim_empty)
+	for state in "${state_flags[@]}"; do
+		vms+=$(virsh list "$state" --name 2>/dev/null)
+		vms+=' '
+	done
 
 	for vm in $vms; do
 		if virsh metadata "$vm" --uri urn:vadas 2>/dev/null |
@@ -1729,7 +1734,7 @@ function cmd_start() {
 	done
 
 	if [ -z "$vm_name" ]; then
-		vm_name=$(_select_vm --all)
+		vm_name=$(_select_vm --state-paused --state-shutoff)
 		[ $? -ne 0 ] && exit 0
 	fi
 

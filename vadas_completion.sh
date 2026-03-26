@@ -156,17 +156,30 @@ function _comp_remote_path() {
 }
 
 function _comp_vms() {
-	local state_flag="$1"
-	local extra_opts="$2"
+	local virsh_flags=()
+	local extra_opts=()
+	for arg in "$@"; do
+		if [[ "$arg" == --state-* || "$arg" == "--all" ]]; then
+			virsh_flags+=("$arg")
+		else
+			extra_opts+=("$arg")
+		fi
+	done
+
 	local vm_ids
-	vm_ids=$(_get_vm_list "$state_flag")
-	COMPREPLY=( $(compgen -W "${vm_ids} ${extra_opts}" -- "${cur}") )
+	vm_ids=$(_get_vm_list "${virsh_flags[@]}")
+	COMPREPLY=( $(compgen -W "${vm_ids} ${extra_opts[*]}" -- "${cur}") )
 }
 
 function _get_vm_list() {
-	local state_flags="$*"
+	local state_flags=("$@")
+
+	# virsh list can't handle multiple states when shutoff is specified
 	local vms
-	vms=$(virsh list $state_flags --name 2>/dev/null)
+	for state in "${state_flags[@]}"; do
+		vms+=$(virsh list "$state" --name 2>/dev/null)
+		vms+=' '
+	done
 
 	for vm in $vms; do
 		if virsh metadata "$vm" --uri urn:vadas 2>/dev/null |
@@ -281,11 +294,11 @@ function _vadas_sh_completion() {
 				return 0
 				;;
 		start)
-			_comp_vms --all "${help_opts}"
+			_comp_vms --state-paused --state-shutoff "${help_opts}"
 			return 0
 			;;
 		stop|kill)
-			_comp_vms --state-running "${stop_opts} ${help_opts}"
+			_comp_vms --state-paused --state-running "${stop_opts} ${help_opts}"
 			return 0
 			;;
 		--force)
