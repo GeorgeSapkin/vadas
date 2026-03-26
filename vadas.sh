@@ -174,7 +174,6 @@ function _print_help() {
 
 		Resource creation and removal:
 		  create          Create resources (e.g., 'vm')
-		  configure       Configure a resource (e.g., 'vm')
 		  remove|rm       Remove resources (e.g., 'network')
 		  list            List resources (e.g., 'vm')
 		  clean           Clean up resources (e.g., 'temp')
@@ -184,6 +183,7 @@ function _print_help() {
 		  stop|kill       Stop a running VM (use --force for immediate stop)
 		  pause|suspend   Pause a running VM
 		  resume          Resume a paused VM
+		  configure       Configure a resource (e.g., 'vm')
 		  connect         Connect to the console of a running VM
 		  exec            Execute commands on a running VM via its console
 		  cp              Copy files and directories to and from a VM
