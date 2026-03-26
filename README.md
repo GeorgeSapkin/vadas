@@ -7,6 +7,10 @@ QEMU/KVM and libvirt. It simplifies the process of downloading official OpenWrt
 images, creating, and configuring VMs for various architectures, and managing
 their lifecycle.
 
+Built by a maintainer for maintainers, it’s designed to provide a reproducible
+_clean slate_ for testing locally-built packages across multiple architectures
+without risking hardware flash wear.
+
 Vadas means commander, leader, or chief in Lithuanian.
 
 Supported OpenWrt versions: 21.02+, release snapshots, and snapshots
@@ -28,10 +32,12 @@ Supported architectures (depending on the availability in a release):
   so newly-created VMs get internet access out of the box.
 - **Image Management**: Automatically downloads, verifies, and caches official
   OpenWrt images; cleans up unused artifacts.
+- **Isolated Environments**: Supports multiple concurrent instances of the same
+  release/target.
 - **Interactive CLI**: Menu-driven interface for ease of use, with Bash
   completion support for VM names and paths.
-- **File Transfer**: Integrated `cp` command to transfer files between host and
-  guest.
+- **File Transfer**: Integrated `cp` command for bi-directional file transfer
+  between host and guest.
 
 ## Dependencies
 
