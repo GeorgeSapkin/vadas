@@ -921,8 +921,11 @@ function _fetch_releases() {
 	echo ' OK.' >&2
 
 	<<< "$json" jq -r --argjson min_ver "$MIN_OPENWRT_VER" '
+		(.upcoming_version // "") as $up |
+		($up | split("-")[0]) as $up_series |
 		.versions_list[] |
-		select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) |
+		select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$") or
+			($up != "" and startswith($up_series) and contains("-rc"))) |
 		select(split(".")[0] | tonumber >= $min_ver)
 	'
 }
