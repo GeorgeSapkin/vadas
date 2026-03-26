@@ -1,0 +1,62 @@
+# Copyright (c) 2026 George Sapkin
+#
+# SPDX-License-Identifier: GPL-2.0-only
+
+lassign $argv vm_name cmds exp exp_to
+
+if {$exp_to eq ""} { set exp_to -1 }
+
+set PROMPT "root@OpenWrt.*#"
+
+set timeout 10
+spawn virsh console $vm_name
+
+expect {
+    "Connected to domain" { exp_continue }
+    "Escape character is" { send "\r" }
+    timeout { exit 1 }
+}
+
+set timeout 60
+set none_retry 0
+expect {
+    "Please press Enter to activate this console" {
+        send "\r"
+        exp_continue
+    }
+    -re {root@\(none\).*#} {
+        if {[incr $none_retry] > 20 } {
+            send_user "$FAILED_MSG"
+            exit 1
+        }
+        # Remove bad prompts
+        send_user "\x1b\[1A\x1b\[K\r"
+        send "\r"
+        after 2000
+        exp_continue
+    }
+    -re "$PROMPT" {}
+    timeout {
+        send_user "Failed to reach the prompt."
+        exit 1
+    }
+}
+
+foreach line [split $cmds "\n"] {
+    set cmd [string trim $line]
+    if {$cmd ne ""} {
+        send "$cmd\r"
+    }
+}
+
+if {$exp ne ""} {
+    set timeout $exp_to
+    expect "$exp"
+} else {
+    expect -re "$PROMPT"
+}
+
+set timeout 10
+after 10
+send "\x1d"
+expect eof

@@ -23,6 +23,9 @@ readonly VADAS_IMAGE_DIR="${VADAS_IMAGE_DIR:-${VADAS_CONFIG_DIR}/images}"
 readonly VADAS_TEMPLATE_DIR="${VADAS_TEMPLATE_DIR:-${VADAS_CONFIG_DIR}/templates}"
 readonly VADAS_TEMP_DIR="${VADAS_TEMP_DIR:-/tmp/vadas}"
 
+readonly EXPECT_CONF='br-lan: port 1(eth1) entered forwarding state'
+readonly EXPECT_CONF_TO=30
+
 readonly MENU_HELP_BACK='Enter to select, Esc to go back'
 readonly MENU_HELP_EXIT='Enter to select, Esc to exit'
 
@@ -107,6 +110,13 @@ function _print_help() {
 		Source or destination can be a local path or <vm_name>:[<remote_path>].
 		EOF
 		;;
+	exec)
+		cat <<-EOF
+		<vm_name> <commands>
+
+		Execute commands on a running VM via its console.
+		EOF
+		;;
 	list)
 		cat <<-EOF
 		<subcommand>
@@ -175,6 +185,7 @@ function _print_help() {
 		  pause|suspend   Pause a running VM
 		  resume          Resume a paused VM
 		  connect         Connect to the console of a running VM
+		  exec            Execute commands on a running VM via its console
 		  cp              Copy files and directories to and from a VM
 		  ps              List running VMs (--all includes paused VMs)
 		  show            Show resource details (e.g., 'ip')
@@ -1535,6 +1546,27 @@ function cmd_env() {
 	EOF
 }
 
+function cmd_exec() {
+	_ensure expect
+	_ensure virsh
+
+	local vm_name="$1"
+	shift
+	local cmds="$*"
+
+	if [[ -z "$vm_name" || "$vm_name" =~ ^(-h|--help)$ || -z "$cmds" ]]; then
+		_print_help exec
+		[[ "$vm_name" == "-h" || "$vm_name" == "--help" ]] && exit 0 || exit 1
+	fi
+
+	if [ "$(_get_vm_state "$vm_name")" != 'running' ]; then
+		echo "${F_RED}ERROR${F_RESET}: VM '$vm_name' is not running." >&2
+		exit 1
+	fi
+
+	expect "$VADAS_CONFIG_DIR/exec.exp" "$vm_name" "$cmds"
+}
+
 function cmd_list() {
 	local sub_command="$1"
 	case "$sub_command" in
@@ -1878,7 +1910,7 @@ function sub_cmd_configure_vm() {
 	cmds+=$'\n_configure_network_guest'
 	cmds+=" '$wan_ip' '$wan_netmask' '$wan_gateway' '$lan_ip' '$lan_netmask' >/dev/null"
 
-	expect "$VADAS_CONFIG_DIR/configure.exp" "$vm_name" "$cmds"
+	expect "$VADAS_CONFIG_DIR/exec.exp" "$vm_name" "$cmds" "$EXPECT_CONF" "$EXPECT_CONF_TO"
 }
 
 function sub_cmd_create_network() {
@@ -2233,6 +2265,7 @@ configure)       cmd_configure "${@:2}" ;;
 cp|copy)         cmd_cp "${@:2}" ;;
 create)          cmd_create "$2" ;;
 env)             cmd_env "$2" ;;
+exec)            cmd_exec "${@:2}" ;;
 images)          sub_cmd_list_images ;;
 list)            cmd_list "$2" ;;
 pause|suspend)   cmd_pause "${@:2}" ;;

@@ -45,8 +45,8 @@ install_dev: check_deps clean install_templates_dev *.exp vadas.sh vadas_complet
 	mkdir -p $(VADAS_BIN_DIR)
 	mkdir -p $(VADAS_CONFIG_DIR)
 	mkdir -p $(VADAS_BASH_COMPLETION_DIR)
-	ln -s $(PWD)/configure.exp $(VADAS_CONFIG_DIR)/configure.exp
 	ln -s $(PWD)/connect.exp $(VADAS_CONFIG_DIR)/connect.exp
+	ln -s $(PWD)/exec.exp $(VADAS_CONFIG_DIR)/exec.exp
 	ln -s $(PWD)/vadas.sh $(VADAS_BIN_DIR)/vadas
 	ln -s $(PWD)/vadas_completion.sh $(VADAS_BASH_COMPLETION_DIR)/vadas
 

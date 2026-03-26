@@ -203,6 +203,7 @@ function _vadas_sh_completion() {
 		cp
 		create
 		env
+		exec
 		images
 		kill
 		list
@@ -235,7 +236,7 @@ function _vadas_sh_completion() {
 			COMPREPLY=( $(compgen -W "${configure_opts} ${help_opts}" -- "${cur}") )
 			return 0
 			;;
-		connect)
+		connect|exec)
 			_comp_vms --state-running "${help_opts}"
 			return 0
 			;;

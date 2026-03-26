@@ -121,6 +121,15 @@ If `vm_name` is not provided, you can select a VM from the list interactively.
 >
 > Press `Ctrl+]` to exit the console connection to a VM.
 
+Install a local package through a combination of `cp` and `exec`:
+
+```shell
+vadas cp path/to/packages/package-name.apk some-vm-name:/tmp
+vadas exec some-vm-name apk add --allow-untrusted /tmp/package-name.apk
+```
+
+Or the equivalent using opkg for pre-25.12 releases.
+
 ## Demo
 
 ![Vadas](./assets/demo.gif)
@@ -150,6 +159,7 @@ When no arguments are supplied, most commands are interactive.
 | `create network`                 | Interactively create the `vadas-wan` and `vadas-lan` virtual networks. |
 | `create pool`                    | Create the `vadas` storage pool. |
 | `create vm`                      | Interactively download an OpenWrt image and create a new VM. |
+| `exec <vm_name> <commands>`      | Execute commands on a running VM via its console. |
 | `list images`                    | List all downloaded disk images. |
 | `list vm`                        | List all VMs managed by `vadas`. |
 | `pause [<vm_name>]`              | Pause a running VM. |

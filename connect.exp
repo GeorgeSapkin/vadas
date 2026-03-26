@@ -1,14 +1,15 @@
-set vm_name [lindex $argv 0]
+# Copyright (c) 2026 George Sapkin
+#
+# SPDX-License-Identifier: GPL-2.0-only
+
+lassign $argv vm_name
 
 set timeout 10
 spawn virsh console $vm_name
 
 expect {
     "Connected to domain" { exp_continue }
-    "Escape character is" {
-        sleep 0.5
-        send "\r"
-    }
+    "Escape character is" { send "\r" }
     timeout { exit 1 }
 }
 
