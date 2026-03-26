@@ -119,7 +119,8 @@ If `vm_name` is not provided, you can select a VM from the list interactively.
 
 > [!NOTE]
 >
-> Press `Ctrl+]` to exit the console connection to a VM.
+> Press `Ctrl+]` to exit the console connection to a VM if it doesn't disconnect
+> on exit automatically.
 
 Install a local package through a combination of `cp` and `exec`:
 

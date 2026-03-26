@@ -4,6 +4,8 @@
 
 lassign $argv vm_name
 
+set ENTER_MSG "Please press Enter to activate this console"
+
 set timeout 10
 spawn virsh console $vm_name
 
@@ -15,7 +17,7 @@ expect {
 
 set timeout 60
 expect {
-    "Please press Enter to activate this console" {
+    "$ENTER_MSG" {
         send "\r"
         exp_continue
     }
@@ -24,4 +26,6 @@ expect {
 }
 
 set timeout -1
-interact
+# Monitor the output of the spawned process. This is more reliable than the
+# default mode when dealing with serial wrappers like virsh.
+interact -o "$ENTER_MSG" exit
