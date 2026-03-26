@@ -13,7 +13,8 @@ without risking hardware flash wear.
 
 Vadas means commander, leader, or chief in Lithuanian.
 
-Supported OpenWrt versions: 21.02+, release snapshots, and snapshots
+Supported OpenWrt and ImmortalWrt versions: 21.02+, release snapshots, and
+snapshots
 
 Supported architectures (depending on the availability in a release):
 
@@ -115,6 +116,17 @@ vadas create vm
 You'll be able to select OpenWrt version, target and image type. Optionally the
 network can be configure on the VM during the setup.
 
+Download URL can be overridden using `VADAS_DOWNLOAD_URL`:
+
+```shell
+VADAS_DOWNLOAD_URL='https://downloads.immortalwrt.org' \
+vadas create vm
+```
+
+> [!IMPORTANT]
+>
+> Vadas assumes OpenWrt download repository structure.
+
 Connect to the newly-create VM either during setup, or by doing:
 
 ```shell
@@ -184,6 +196,7 @@ When no arguments are supplied, most commands are interactive.
 
 - `VADAS_CACHE_DIR`: Cache directory (default: `$HOME/.cache/vadas`).
 - `VADAS_CONFIG_DIR`: Configuration directory (default: `$HOME/.config/vadas`).
+- `VADAS_DOWNLOAD_URL` Base download URL (default: `https://downloads.openwrt.org`).
 - `VADAS_IMAGE_DIR`: Image storage directory (default: `$VADAS_CONFIG_DIR/images`).
 - `VADAS_TEMPLATE_DIR`: Template directory (default: `$VADAS_CONFIG_DIR/templates`).
 - `VADAS_TEMP_DIR`: Temporary file directory (default: `/tmp/vadas`).

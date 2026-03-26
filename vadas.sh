@@ -14,11 +14,11 @@ readonly TARGETS=(
   'x86/generic'
 )
 
-readonly OPENWRT_DOWNLOAD_URL='https://downloads.openwrt.org'
 readonly MIN_OPENWRT_VER=21
 
 readonly VADAS_CACHE_DIR="${VADAS_CONFIG_DIR:-${HOME}/.cache/vadas}"
 readonly VADAS_CONFIG_DIR="${VADAS_CONFIG_DIR:-${HOME}/.config/vadas}"
+readonly VADAS_DOWNLOAD_URL="${VADAS_DOWNLOAD_URL:-https://downloads.openwrt.org}"
 readonly VADAS_IMAGE_DIR="${VADAS_IMAGE_DIR:-${VADAS_CONFIG_DIR}/images}"
 readonly VADAS_TEMPLATE_DIR="${VADAS_TEMPLATE_DIR:-${VADAS_CONFIG_DIR}/templates}"
 readonly VADAS_TEMP_DIR="${VADAS_TEMP_DIR:-/tmp/vadas}"
@@ -459,6 +459,9 @@ function _create_vm() {
 	local arch boot_wait loader machine nvram_file nvram_template qemu_bin \
 		template
 
+	local prefix
+	prefix=$(_get_file_prefix)
+
 	local used_images
 	used_images=$(_get_used_images)
 
@@ -467,7 +470,7 @@ function _create_vm() {
 	# malta releases don't have profiles.json as of 25.12.1, but snapshots do
 	if [[ "$target" == malta/* && "$version" != 'snapshot' ]]; then
 		local checksums_path
-		checksums_path=$(_get_cached_file_path "$version" "openwrt-$version-$target_flat-checksums.txt")
+		checksums_path=$(_get_cached_file_path "$version" "$prefix-$version-$target_flat-checksums.txt")
 		if ! _fetch_checksums "$version" "$target" "$checksums_path"; then
 			echo "${F_RED}ERROR${F_RESET}: Failed to fetch checksums. The target '$target' may not be available for release '$version'."
 			exit 1
@@ -483,9 +486,9 @@ function _create_vm() {
 		fi
 		echo "${F_GREEN_BOLD}Selected image:${F_RESET} $selected_image"
 
-		local file_prefix="openwrt-${version}-"
+		local file_prefix="$prefix-${version}-"
 		if [ "$version" == 'snapshot' ]; then
-			file_prefix='openwrt-'
+			file_prefix="$prefix-"
 		fi
 		local kernel_filename="${file_prefix}${target_flat}-vmlinux.elf"
 		local image_filename="${file_prefix}${target_flat}-rootfs-${selected_image}.img.gz"
@@ -514,7 +517,7 @@ function _create_vm() {
 		image_path=$(_install_image_file gunzip "$local_image_path" "$used_images")
 	else
 		local profiles_path
-		profiles_path=$(_get_cached_file_path "$version" "openwrt-$version-$target_flat-profiles.json")
+		profiles_path=$(_get_cached_file_path "$version" "$prefix-$version-$target_flat-profiles.json")
 		if ! _fetch_profiles "$version" "$target" "$profiles_path"; then
 			echo "${F_RED}ERROR${F_RESET} Failed to fetch profiles. The target '$target' may not be available for release '$version'."
 			exit 1
@@ -533,6 +536,7 @@ function _create_vm() {
 				.profiles[].images[] |
 				select(.type == "rootfs") |
 				select(.filesystem == "ext4" or .filesystem == "squashfs") |
+				select(.name | endswith(".img.gz")) |
 				"\(.filesystem) \(.type)"
 			'
 		else
@@ -540,6 +544,7 @@ function _create_vm() {
 				.profiles[].images[] |
 				select(.type == "combined" or .type == "combined-efi") |
 				select(.filesystem == "ext4" or .filesystem == "squashfs") |
+				select(.name | endswith(".img.gz")) |
 				"\(.filesystem) \(.type)"
 			'
 		fi
@@ -571,6 +576,7 @@ function _create_vm() {
 		image_info=$(<<< "$profiles_json" jq -r --arg fs "$fs" --arg type "$type" '
 			.profiles[].images[] |
 			select(.filesystem == $fs and .type == $type) |
+			select(.name | endswith(".img.gz")) |
 			"\(.name) \(.sha256)"
 		' | head -n 1)
 
@@ -585,7 +591,7 @@ function _create_vm() {
 		local local_image_filename="$image_filename"
 
 		if [ "$version" == 'snapshot' ] && [ -n "$version_code" ]; then
-			local_image_filename="${image_filename/openwrt-/openwrt-snapshot-}"
+			local_image_filename="${image_filename/$prefix-/$prefix-snapshot-}"
 			if [[ "$local_image_filename" == *'.img.gz' ]]; then
 				local_image_filename="${local_image_filename/.img.gz/-${version_code}.img.gz}"
 			else
@@ -618,7 +624,7 @@ function _create_vm() {
 
 			local local_kernel_filename="$kernel_filename"
 			if [ "$version" == 'snapshot' ] && [ -n "$version_code" ] && [ -n "$kernel_filename" ]; then
-				local_kernel_filename="${kernel_filename/openwrt-/openwrt-snapshot-}"
+				local_kernel_filename="${kernel_filename/$prefix-/$prefix-snapshot-}"
 				local_kernel_filename="${local_kernel_filename%.*}-${version_code}.${local_kernel_filename##*.}"
 			fi
 
@@ -912,9 +918,9 @@ function _fetch_releases() {
 	_ensure curl
 	_ensure jq
 
-	echo -n 'Fetching OpenWrt releases...' >&2
+	echo -n "Fetching releases from $VADAS_DOWNLOAD_URL..." >&2
 	local json
-	if ! json=$(curl -sf "$OPENWRT_DOWNLOAD_URL/.versions.json"); then
+	if ! json=$(curl -sf "$VADAS_DOWNLOAD_URL/.versions.json"); then
 		echo ' failed.' >&2
 		exit 1
 	fi
@@ -982,14 +988,21 @@ function _get_cached_file_path() {
 	fi
 }
 
+function _get_file_prefix() {
+	local domain="${VADAS_DOWNLOAD_URL#*//}"
+	domain="${domain%%/*}"
+	local without_tld="${domain%.*}"
+	echo "${without_tld##*.}"
+}
+
 function _get_image_url() {
 	local version="$1"
 	local target="$2"
 	local filename="${3:-}"
 	if [ "$version" == 'snapshot' ]; then
-		echo "$OPENWRT_DOWNLOAD_URL/snapshots/targets/$target/$filename"
+		echo "$VADAS_DOWNLOAD_URL/snapshots/targets/$target/$filename"
 	else
-		echo "$OPENWRT_DOWNLOAD_URL/releases/$version/targets/$target/$filename"
+		echo "$VADAS_DOWNLOAD_URL/releases/$version/targets/$target/$filename"
 	fi
 }
 
@@ -1546,11 +1559,12 @@ function cmd_env() {
 	esac
 
 	cat <<-EOF
-		VADAS_CACHE_DIR=$VADAS_CACHE_DIR
-		VADAS_CONFIG_DIR=$VADAS_CONFIG_DIR
-		VADAS_IMAGE_DIR=$VADAS_IMAGE_DIR
-		VADAS_TEMPLATE_DIR=$VADAS_TEMPLATE_DIR
-		VADAS_TEMP_DIR=$VADAS_TEMP_DIR
+	VADAS_CACHE_DIR=$VADAS_CACHE_DIR
+	VADAS_CONFIG_DIR=$VADAS_CONFIG_DIR
+	VADAS_DOWNLOAD_URL=$VADAS_DOWNLOAD_URL
+	VADAS_IMAGE_DIR=$VADAS_IMAGE_DIR
+	VADAS_TEMPLATE_DIR=$VADAS_TEMPLATE_DIR
+	VADAS_TEMP_DIR=$VADAS_TEMP_DIR
 	EOF
 }
 
@@ -1960,6 +1974,9 @@ function sub_cmd_create_vm() {
 		exit 1
 	fi
 
+	local prefix
+	prefix=$(_get_file_prefix)
+
 	while true; do
 		local series_options=('snapshot')
 		local major_minors
@@ -2005,7 +2022,7 @@ function sub_cmd_create_vm() {
 
 		local target_list=("${TARGETS[@]}")
 		local targets_path
-		targets_path=$(_get_cached_file_path "$version" "openwrt-$version-targets.txt")
+		targets_path=$(_get_cached_file_path "$version" "$prefix-$version-targets.txt")
 		if _fetch_dir_list "$version" '' "$targets_path" 'targets'; then
 			local available_targets
 			available_targets=$(cat "$targets_path")
@@ -2016,7 +2033,7 @@ function sub_cmd_create_vm() {
 				local subtarget="${t#*/}"
 				if grep -qFw "$target" <<< "$available_targets"; then
 					local subtargets_path
-					subtargets_path=$(_get_cached_file_path "$version" "openwrt-$version-$target-subtargets.txt")
+					subtargets_path=$(_get_cached_file_path "$version" "$prefix-$version-$target-subtargets.txt")
 					if [[ "$fetched_subtargets" != *" $target "* ]]; then
 						_fetch_dir_list "$version" "$target" "$subtargets_path" "subtargets for $target"
 						fetched_subtargets+="$target "

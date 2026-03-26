@@ -6,7 +6,7 @@ lassign $argv vm_name cmds exp exp_to
 
 if {$exp_to eq ""} { set exp_to -1 }
 
-set PROMPT "root@OpenWrt.*#"
+set PROMPT "root@.*#"
 
 set timeout 10
 spawn virsh console $vm_name
