@@ -334,7 +334,7 @@ function _create_network() {
 	fi
 
 	if virsh net-info "$name" >/dev/null 2>&1; then
-		echo "${F_RED}ERROR${F_RESET}: Network '$name' already exists."
+		echo "${F_RED}ERROR:${F_RESET} Network '$name' already exists."
 		return 1
 	fi
 
@@ -347,7 +347,7 @@ function _create_network() {
 			interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | sort)
 
 			if [ -z "$interfaces" ]; then
-				echo "${F_RED}ERROR${F_RESET}: No network interfaces found."
+				echo "${F_RED}ERROR:${F_RESET} No network interfaces found."
 				return 1
 			fi
 
@@ -472,7 +472,7 @@ function _create_vm() {
 		local checksums_path
 		checksums_path=$(_get_cached_file_path "$version" "$prefix-$version-$target_flat-checksums.txt")
 		if ! _fetch_checksums "$version" "$target" "$checksums_path"; then
-			echo "${F_RED}ERROR${F_RESET}: Failed to fetch checksums. The target '$target' may not be available for release '$version'."
+			echo "${F_RED}ERROR:${F_RESET} Failed to fetch checksums. The target '$target' may not be available for release '$version'."
 			exit 1
 		fi
 
@@ -553,7 +553,7 @@ function _create_vm() {
 		image_list=$(<<< "$profiles_json" jq -r "$image_query" | sort | uniq)
 
 		if [ -z "$image_list" ]; then
-			echo "${F_RED}ERROR${F_RESET}: No images found or failed to parse JSON."
+			echo "${F_RED}ERROR:${F_RESET} No images found or failed to parse JSON."
 			exit 1
 		fi
 
@@ -584,7 +584,7 @@ function _create_vm() {
 		read -r image_filename image_sha256 <<<"$image_info"
 
 		if [ -z "$image_filename" ]; then
-			echo "${F_RED}ERROR${F_RESET}: Could not determine image filename for selection."
+			echo "${F_RED}ERROR:${F_RESET} Could not determine image filename for selection."
 			exit 1
 		fi
 
@@ -685,7 +685,7 @@ function _create_vm() {
 	local wan_ip
 	wan_ip=$(_get_next_ip wan "$NET_WAN_NAME")
 	if [ -z "$wan_ip" ]; then
-		echo "${F_RED}ERROR${F_RESET}: Failed to find an available WAN IP address for the VM." >&2
+		echo "${F_RED}ERROR:${F_RESET} Failed to find an available WAN IP address for the VM." >&2
 		return 1
 	fi
 	echo "${F_GREEN_BOLD}Allocated WAN IP:${F_RESET} $wan_ip"
@@ -693,7 +693,7 @@ function _create_vm() {
 	local lan_ip
 	lan_ip=$(_get_next_ip lan "$NET_LAN_NAME")
 	if [ -z "$lan_ip" ]; then
-		echo "${F_RED}ERROR${F_RESET}: Failed to find an available LAN IP address for the VM." >&2
+		echo "${F_RED}ERROR:${F_RESET} Failed to find an available LAN IP address for the VM." >&2
 		return 1
 	fi
 	echo "${F_GREEN_BOLD}Allocated LAN IP:${F_RESET} $lan_ip"
@@ -724,14 +724,14 @@ function _create_vm() {
 				--edit "network,source=$NET_WAN_NAME" \
 				--network 'address.slot=0x12' >/dev/null
 			then
-				echo "${F_RED}ERROR${F_RESET}: Failed to update WAN network configuration." >&2
+				echo "${F_RED}ERROR:${F_RESET} Failed to update WAN network configuration." >&2
 				exit 1
 			fi
 			if ! virt-xml "$vm_name" \
 				--edit "network,source=$NET_LAN_NAME" \
 				--network 'address.slot=0x13' >/dev/null
 			then
-				echo "${F_RED}ERROR${F_RESET}: Failed to update LAN network configuration." >&2
+				echo "${F_RED}ERROR:${F_RESET} Failed to update LAN network configuration." >&2
 				exit 1
 			fi
 		fi
@@ -793,7 +793,7 @@ function _download_image() {
 
 	echo "Downloading image from $url..."
 	if ! curl -L --progress-bar -o "$path" "$url"; then
-		echo "${F_RED}ERROR${F_RESET}: Download failed."
+		echo "${F_RED}ERROR:${F_RESET} Download failed."
 		rm -f "$path"
 		exit 1
 	fi
@@ -813,7 +813,7 @@ function _download_image() {
 function _ensure() {
 	local cmd="$1"
 	if ! command -v "$cmd" >/dev/null 2>&1; then
-		echo "${F_RED}ERROR${F_RESET}: '$cmd' command not found."
+		echo "${F_RED}ERROR:${F_RESET} '$cmd' command not found."
 		exit 1
 	fi
 }
@@ -824,7 +824,7 @@ function _ensure_net() {
 	local name="$1"
 
 	if ! virsh net-info "$name" >/dev/null 2>&1; then
-		echo "${F_RED}ERROR${F_RESET}: Virtual network '$name' does not exist. Please create it first using '$(basename "$0") create network'." >&2
+		echo "${F_RED}ERROR:${F_RESET} Virtual network '$name' does not exist. Please create it first using '$(basename "$0") create network'." >&2
 		exit 1
 	fi
 }
@@ -1123,15 +1123,15 @@ function _get_unique_vm_name() {
 		echo -e "\n${F_DIM}Allowed characters: alphanumeric, dot, dash${F_RESET}" >&2
 		read -r -e -p "${F_BOLD}VM name${F_RESET}: " -i "$candidate" new_name >&2
 		if [ -z "$new_name" ]; then
-			echo "${F_RED}ERROR${F_RESET}: Name cannot be empty." >&2
+			echo "${F_RED}ERROR:${F_RESET} Name cannot be empty." >&2
 			continue
 		fi
 		if [[ ! "$new_name" =~ ^[a-zA-Z0-9.-]+$ ]]; then
-			echo "${F_RED}ERROR${F_RESET}: Name must contain only alphanumeric characters, dots, and dashes." >&2
+			echo "${F_RED}ERROR:${F_RESET} Name must contain only alphanumeric characters, dots, and dashes." >&2
 			continue
 		fi
 		if grep -qFx "$new_name" <<< "$existing_vms"; then
-			echo "${F_RED}ERROR${F_RESET}: VM '$new_name' already exists." >&2
+			echo "${F_RED}ERROR:${F_RESET} VM '$new_name' already exists." >&2
 			base="$new_name"
 			counter=1
 			if [[ "$new_name" =~ ^(.*)-([0-9]+)$ ]]; then
@@ -1181,7 +1181,7 @@ function _get_vm_state() {
 	local state
 	state=$(virsh domstate "$vm_name" 2>&1)
 	if [ $? -ne 0 ]; then
-		echo "${F_RED}ERROR${F_RESET}: Unable to get state for '$vm_name':"
+		echo "${F_RED}ERROR:${F_RESET} Unable to get state for '$vm_name':"
 		echo "$state"
 		exit 1
 	fi
@@ -1364,7 +1364,7 @@ function _render_template() {
 	local template="$1"
 	shift
 	if [ ! -f "$template" ]; then
-		echo "${F_RED}ERROR${F_RESET}: Template '$template' not found." >&2
+		echo "${F_RED}ERROR:${F_RESET} Template '$template' not found." >&2
 		exit 1
 	fi
 	local content
@@ -1472,7 +1472,7 @@ function cmd_connect() {
 	fi
 
 	if [ "$(_get_vm_state "$vm_name")" != 'running' ]; then
-		echo "${F_RED}ERROR${F_RESET}: VM '$vm_name' is not running." >&2
+		echo "${F_RED}ERROR:${F_RESET} VM '$vm_name' is not running." >&2
 		exit 1
 	fi
 
@@ -1582,7 +1582,7 @@ function cmd_exec() {
 	fi
 
 	if [ "$(_get_vm_state "$vm_name")" != 'running' ]; then
-		echo "${F_RED}ERROR${F_RESET}: VM '$vm_name' is not running." >&2
+		echo "${F_RED}ERROR:${F_RESET} VM '$vm_name' is not running." >&2
 		exit 1
 	fi
 
@@ -1896,7 +1896,7 @@ function sub_cmd_configure_vm() {
 	local state
 	state=$(_get_vm_state "$vm_name")
 	if [ "$state" != "running" ]; then
-		echo "${F_RED}ERROR${F_RESET}: VM '$vm_name' is not running. Please start it first." >&2
+		echo "${F_RED}ERROR:${F_RESET} VM '$vm_name' is not running. Please start it first." >&2
 		exit 1
 	fi
 
@@ -1906,7 +1906,7 @@ function sub_cmd_configure_vm() {
 	wan_netmask=$(<<< "$wan_xml" xmllint --xpath 'string(//ip/@netmask)' -)
 
 	if [ -z "$wan_gateway" ]; then
-		echo "${F_RED}ERROR${F_RESET}: Could not parse network configuration for '$NET_WAN_NAME'." >&2
+		echo "${F_RED}ERROR:${F_RESET} Could not parse network configuration for '$NET_WAN_NAME'." >&2
 		exit 1
 	fi
 
@@ -1919,7 +1919,7 @@ function sub_cmd_configure_vm() {
 	lan_ip=$(_get_ip lan "$vm_name")
 
 	if [ -z "$wan_ip" ]; then
-		echo "${F_RED}ERROR${F_RESET}: VM '$vm_name' does not have an assigned IP in metadata." >&2
+		echo "${F_RED}ERROR:${F_RESET} VM '$vm_name' does not have an assigned IP in metadata." >&2
 		exit 1
 	fi
 
@@ -1947,7 +1947,7 @@ function sub_cmd_create_pool() {
 	_ensure virsh
 
 	if virsh pool-info "$POOL_NAME" >/dev/null 2>&1; then
-		echo "${F_RED}ERROR${F_RESET}: Storage pool '$POOL_NAME' already exists."
+		echo "${F_RED}ERROR:${F_RESET} Storage pool '$POOL_NAME' already exists."
 		exit 1
 	fi
 
@@ -1970,7 +1970,7 @@ function sub_cmd_create_vm() {
 	readarray -t releases < <(_fetch_releases)
 
 	if [ "${#releases[@]}" -eq 0 ]; then
-		echo "${F_RED}ERROR${F_RESET}: No releases found."
+		echo "${F_RED}ERROR:${F_RESET} No releases found."
 		exit 1
 	fi
 
@@ -2160,7 +2160,7 @@ function sub_cmd_remove_network() {
 	done
 
 	if [ ${#vm_deps[@]} -gt 0 ]; then
-		echo -e "${F_RED}ERROR${F_RESET}: The following VMs are using the networks to be removed:"$'\n'
+		echo -e "${F_RED}ERROR:${F_RESET} The following VMs are using the networks to be removed:"$'\n'
 
 		local sorted_vms
 		sorted_vms=$(printf '%s\n' "${!vm_deps[@]}" | sort)
@@ -2197,7 +2197,7 @@ function sub_cmd_remove_pool() {
 	_ensure xmllint
 
 	if ! virsh pool-info "$POOL_NAME" >/dev/null 2>&1; then
-		echo "${F_RED}ERROR${F_RESET}: Storage pool '$POOL_NAME' does not exist."
+		echo "${F_RED}ERROR:${F_RESET} Storage pool '$POOL_NAME' does not exist."
 		exit 1
 	fi
 
@@ -2213,7 +2213,7 @@ function sub_cmd_remove_pool() {
 	done
 
 	if [ -n "$dependent_vms" ]; then
-		echo -e "${F_RED}ERROR${F_RESET}: The following VMs are using storage pool '$POOL_NAME':\n"
+		echo -e "${F_RED}ERROR:${F_RESET} The following VMs are using storage pool '$POOL_NAME':\n"
 		_format_vms_for_menu "${dependent_vms// /$'\n'}"
 		echo -e '\nPlease remove them before removing the storage pool.'
 		exit 1
@@ -2238,7 +2238,7 @@ function sub_cmd_remove_vm() {
 	local state
 	state=$(_get_vm_state "$vm_name")
 	if [[ "$state" == 'running' || "$state" == 'paused' ]]; then
-		echo "${F_YELLOW}WARNING${F_RESET}: VM '$vm_name' is $state!"
+		echo "${F_YELLOW}WARNING:${F_RESET} VM '$vm_name' is $state!"
 		if ! _confirm 'Are you sure you want to force stop and remove it?'; then
 			return 0
 		fi
@@ -2269,7 +2269,7 @@ function sub_cmd_show_ip() {
 	if [ -n "$wan_ip" ]; then
 		echo "WAN: $wan_ip"
 	else
-		echo "${F_RED}ERROR${F_RESET}: No WAN IP found in metadata for '$vm_name'." >&2
+		echo "${F_RED}ERROR:${F_RESET} No WAN IP found in metadata for '$vm_name'." >&2
 		exit 1
 	fi
 
@@ -2278,7 +2278,7 @@ function sub_cmd_show_ip() {
 	if [ -n "$lan_ip" ]; then
 		echo "LAN: $lan_ip"
 	else
-		echo "${F_RED}ERROR${F_RESET}: No LAN IP found in metadata for '$vm_name'." >&2
+		echo "${F_RED}ERROR:${F_RESET} No LAN IP found in metadata for '$vm_name'." >&2
 		exit 1
 	fi
 }
