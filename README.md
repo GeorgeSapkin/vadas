@@ -153,7 +153,7 @@ Or the equivalent using opkg for pre-25.12 releases.
 
 ![Vadas](./assets/demo.gif)
 
-[Longer demo on YouTube](https://www.youtube.com/watch?v=-uD7iaaJeXQ)
+[Longer demo on YouTube](https://www.youtube.com/watch?v=9HROVe_9Aao)
 
 ## CLI reference
 
