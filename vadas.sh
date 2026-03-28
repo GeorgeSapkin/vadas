@@ -52,6 +52,7 @@ readonly F_GREEN_BOLD=$'\e[1;32m'
 readonly F_RED=$'\e[31m'
 readonly F_RESET=$'\e[0m'
 readonly F_YELLOW=$'\e[33m'
+readonly F_YELLOW_BOLD=$'\e[1;33m'
 
 function _print_help() {
 	local cmd="$1"
@@ -452,251 +453,27 @@ function _create_vm() {
 	_ensure virsh
 	_ensure virt-xml
 
-	local version="$1"
-	local target="$2"
+	local arch image_path kernel_path lan_ip loader machine nvram_file \
+		nvram_template qemu_bin target template vm_name wan_ip
 
-	local image_path kernel_path
-	local arch boot_wait loader machine nvram_file nvram_template qemu_bin \
-		template
-
-	local prefix
-	prefix=$(_get_file_prefix)
-
-	local used_images
-	used_images=$(_get_used_images)
-
-	local target_flat=${target//\//-}
-
-	# malta releases don't have profiles.json as of 25.12.1, but snapshots do
-	if [[ "$target" == malta/* && "$version" != 'snapshot' ]]; then
-		local checksums_path
-		checksums_path=$(_get_cached_file_path "$version" "$prefix-$version-$target_flat-checksums.txt")
-		if ! _fetch_checksums "$version" "$target" "$checksums_path"; then
-			echo "${F_RED}ERROR:${F_RESET} Failed to fetch checksums. The target '$target' may not be available for release '$version'."
-			exit 1
-		fi
-
-		local options=('ext4' 'squashfs')
-		local selected_image
-		selected_image=$(_interactive_menu \
-			"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select an image:${F_RESET}" "${options[@]}" \
-		)
-		if [ $? -ne 0 ]; then
-			return 1
-		fi
-		echo "${F_GREEN_BOLD}Selected image:${F_RESET} $selected_image"
-
-		local file_prefix="$prefix-${version}-"
-		if [ "$version" == 'snapshot' ]; then
-			file_prefix="$prefix-"
-		fi
-		local kernel_filename="${file_prefix}${target_flat}-vmlinux.elf"
-		local image_filename="${file_prefix}${target_flat}-rootfs-${selected_image}.img.gz"
-
-		local kernel_url image_url
-		kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
-		image_url=$(_get_image_url "$version" "$target" "$image_filename")
-
-		local local_kernel_path
-		local_kernel_path=$(_get_cached_file_path "$version" "$kernel_filename")
-		local local_image_path
-		local_image_path=$(_get_cached_file_path "$version" "$image_filename")
-
-		local kernel_sha256 image_sha256
-		if [ -f "$checksums_path" ]; then
-			kernel_sha256=$(awk -v f="$kernel_filename" '$1 == f {print $2}' "$checksums_path")
-			image_sha256=$(awk -v f="$image_filename" '$1 == f {print $2}' "$checksums_path")
-		fi
-
-		_download_image "$kernel_url" "$local_kernel_path" "$kernel_sha256"
-		_download_image "$image_url" "$local_image_path" "$image_sha256"
-
-		_ensure_pool "$POOL_NAME"
-
-		kernel_path=$(_install_image_file cp "$local_kernel_path" "$used_images")
-		image_path=$(_install_image_file gunzip "$local_image_path" "$used_images")
-	else
-		local profiles_path
-		profiles_path=$(_get_cached_file_path "$version" "$prefix-$version-$target_flat-profiles.json")
-		if ! _fetch_profiles "$version" "$target" "$profiles_path"; then
-			echo "${F_RED}ERROR${F_RESET} Failed to fetch profiles. The target '$target' may not be available for release '$version'."
-			exit 1
-		fi
-
-		local profiles_json
-		profiles_json=$(cat "$profiles_path")
-
-		# Extract version code from profiles for snapshots
-		local version_code
-		version_code=$(<<< "$profiles_json" jq -r '.version_code // empty')
-
-		local image_query
-		if [[ "$target" == malta/* ]]; then
-			image_query='
-				.profiles[].images[] |
-				select(.type == "rootfs") |
-				select(.filesystem == "ext4" or .filesystem == "squashfs") |
-				select(.name | endswith(".img.gz")) |
-				"\(.filesystem) \(.type)"
-			'
-		else
-			image_query='
-				.profiles[].images[] |
-				select(.type == "combined" or .type == "combined-efi") |
-				select(.filesystem == "ext4" or .filesystem == "squashfs") |
-				select(.name | endswith(".img.gz")) |
-				"\(.filesystem) \(.type)"
-			'
-		fi
-
-		local image_list
-		image_list=$(<<< "$profiles_json" jq -r "$image_query" | sort | uniq)
-
-		if [ -z "$image_list" ]; then
-			echo "${F_RED}ERROR:${F_RESET} No images found or failed to parse JSON."
-			exit 1
-		fi
-
-		local options
-		readarray -t options <<< "$image_list"
-
-		local selected_image
-		selected_image=$(_interactive_menu \
-			"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select an image:${F_RESET}" "${options[@]}" \
-		)
-		if [ $? -ne 0 ]; then
-			return 1
-		fi
-		echo "${F_GREEN_BOLD}Selected image:${F_RESET} $selected_image"
-
-		local fs type
-		read -r fs type <<< "$selected_image"
-
-		local image_info
-		image_info=$(<<< "$profiles_json" jq -r --arg fs "$fs" --arg type "$type" '
-			.profiles[].images[] |
-			select(.filesystem == $fs and .type == $type) |
-			select(.name | endswith(".img.gz")) |
-			"\(.name) \(.sha256)"
-		' | head -n 1)
-
-		local image_filename image_sha256
-		read -r image_filename image_sha256 <<<"$image_info"
-
-		if [ -z "$image_filename" ]; then
-			echo "${F_RED}ERROR:${F_RESET} Could not determine image filename for selection."
-			exit 1
-		fi
-
-		local local_image_filename="$image_filename"
-
-		if [ "$version" == 'snapshot' ] && [ -n "$version_code" ]; then
-			local_image_filename="${image_filename/$prefix-/$prefix-snapshot-}"
-			if [[ "$local_image_filename" == *'.img.gz' ]]; then
-				local_image_filename="${local_image_filename/.img.gz/-${version_code}.img.gz}"
-			else
-				local_image_filename="${local_image_filename%.*}-${version_code}.${local_image_filename##*.}"
-			fi
-		fi
-
-		local local_image_path
-		local_image_path=$(_get_cached_file_path "$version" "$local_image_filename")
-		local image_url
-		image_url=$(_get_image_url "$version" "$target" "$image_filename")
-		_download_image "$image_url" "$local_image_path" "$image_sha256"
-
-		_ensure_pool "$POOL_NAME"
-
-		image_path=$(_install_image_file gunzip "$local_image_path" "$used_images")
-
-		# malta targets don't have combined images
-		if [[ "$target" == malta/* ]]; then
-			local kernel_filename kernel_sha256
-			if [[ "$target" == malta/* ]]; then
-				local kernel_info
-				kernel_info=$(<<< "$profiles_json" jq -r '
-					.profiles[].images[] |
-					select(.type == "kernel") |
-					"\(.name) \(.sha256)"
-				' | head -n 1)
-				read -r kernel_filename kernel_sha256 <<<"$kernel_info"
-			fi
-
-			local local_kernel_filename="$kernel_filename"
-			if [ "$version" == 'snapshot' ] && [ -n "$version_code" ] && [ -n "$kernel_filename" ]; then
-				local_kernel_filename="${kernel_filename/$prefix-/$prefix-snapshot-}"
-				local_kernel_filename="${local_kernel_filename%.*}-${version_code}.${local_kernel_filename##*.}"
-			fi
-
-			local local_kernel_path
-			local_kernel_path=$(_get_cached_file_path "$version" "$local_kernel_filename")
-			local kernel_url
-			kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
-			_download_image "$kernel_url" "$local_kernel_path" "$kernel_sha256"
-			kernel_path=$(_install_image_file cp "$local_kernel_path" "$used_images")
-		fi
-	fi
-
-	case "$target" in
-	armsr/armv8)
-		arch='aarch64'
-		boot_wait=20
-		loader='/usr/share/edk2/aarch64/QEMU_EFI-silent-pflash.qcow2'
-		machine='virt'
-		nvram_file="$VADAS_IMAGE_DIR/$(basename "$image_path" .img).nvram"
-		nvram_template='/usr/share/edk2/aarch64/vars-template-pflash.qcow2'
-		qemu_bin='/usr/bin/qemu-system-aarch64'
-		template=vm_arm
-		;;
-	malta/be)
-		arch='mips'
-		qemu_bin='/usr/bin/qemu-system-mips'
-		boot_wait=10
-		template=vm_malta
-		;;
-	malta/le)
-		arch='mipsel'
-		qemu_bin='/usr/bin/qemu-system-mipsel'
-		boot_wait=10
-		template=vm_malta
-		;;
-	x86/64)
-		arch='x86_64'
-		boot_wait=5
-		machine='q35'
-		qemu_bin='/usr/bin/qemu-system-x86_64'
-		template=vm_x86
-		;;
-	x86/generic)
-		arch='i686'
-		boot_wait=5
-		machine='pc'
-		qemu_bin='/usr/bin/qemu-system-i386'
-		template=vm_x86
-		;;
-	esac
-
-	local vm_base_name
-	vm_base_name="$(basename "$image_path" .img)"
-
-	local vm_name
-	vm_name=$(_get_unique_vm_name "$vm_base_name")
-
-	local wan_ip
-	wan_ip=$(_get_next_ip wan "$NET_WAN_NAME")
-	if [ -z "$wan_ip" ]; then
-		echo "${F_RED}ERROR:${F_RESET} Failed to find an available WAN IP address for the VM." >&2
-		return 1
-	fi
-	echo "${F_GREEN_BOLD}Allocated WAN IP:${F_RESET} $wan_ip"
-
-	local lan_ip
-	lan_ip=$(_get_next_ip lan "$NET_LAN_NAME")
-	if [ -z "$lan_ip" ]; then
-		echo "${F_RED}ERROR:${F_RESET} Failed to find an available LAN IP address for the VM." >&2
-		return 1
-	fi
-	echo "${F_GREEN_BOLD}Allocated LAN IP:${F_RESET} $lan_ip"
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-arch) arch="$2"; shift 2 ;;
+		-image-path) image_path="$2"; shift 2 ;;
+		-kernel-path) kernel_path="$2"; shift 2 ;;
+		-lan-ip) lan_ip="$2"; shift 2 ;;
+		-loader) loader="$2"; shift 2 ;;
+		-machine) machine="$2"; shift 2 ;;
+		-nvram-file) nvram_file="$2"; shift 2 ;;
+		-nvram-template) nvram_template="$2"; shift 2 ;;
+		-qemu-bin) qemu_bin="$2"; shift 2 ;;
+		-target) target="$2"; shift 2 ;;
+		-template) template="$2"; shift 2 ;;
+		-vm-name) vm_name="$2"; shift 2 ;;
+		-wan-ip) wan_ip="$2"; shift 2 ;;
+		*) echo "Unknown parameter: $1" >&2; return 1 ;;
+		esac
+	done
 
 	local vm_xml
 	vm_xml=$(_render_template "$VADAS_TEMPLATE_DIR/$template.xml" \
@@ -717,36 +494,25 @@ function _create_vm() {
 		'NVRAM_TEMPLATE'  "$nvram_template"
 	)
 
-	if _define_vm "$vm_name" "$vm_xml"; then
-		if [[ "$target" == malta/* ]]; then
-			# MIPS-specific as virsh doesn't preserve the slot definition
-			if ! virt-xml "$vm_name" \
-				--edit "network,source=$NET_WAN_NAME" \
-				--network 'address.slot=0x12' >/dev/null
-			then
-				echo "${F_RED}ERROR:${F_RESET} Failed to update WAN network configuration." >&2
-				exit 1
-			fi
-			if ! virt-xml "$vm_name" \
-				--edit "network,source=$NET_LAN_NAME" \
-				--network 'address.slot=0x13' >/dev/null
-			then
-				echo "${F_RED}ERROR:${F_RESET} Failed to update LAN network configuration." >&2
-				exit 1
-			fi
+	_define_vm "$vm_name" "$vm_xml" || return 1
+
+	if [[ "$target" == malta/* ]]; then
+		# MIPS-specific as virsh doesn't preserve the slot definition
+		if ! virt-xml "$vm_name" \
+			--edit "network,source=$NET_WAN_NAME" \
+			--network 'address.slot=0x12' >/dev/null
+		then
+			echo "${F_RED}ERROR:${F_RESET} Failed to update WAN network configuration." >&2
+			exit 1
 		fi
-
-		cmd_start "$vm_name"
-
-		if _confirm "Configure network for '$vm_name'?" y; then
-			sub_cmd_configure_vm "$vm_name" "$boot_wait"
-			boot_wait=0
+		if ! virt-xml "$vm_name" \
+			--edit "network,source=$NET_LAN_NAME" \
+			--network 'address.slot=0x13' >/dev/null
+		then
+			echo "${F_RED}ERROR:${F_RESET} Failed to update LAN network configuration." >&2
+			exit 1
 		fi
-
-		_connect_to_vm "$vm_name" "$boot_wait"
 	fi
-
-	return 0
 }
 
 function _define_vm() {
@@ -777,36 +543,36 @@ function _download_image() {
 		filename=$(basename "$path")
 
 		if [ -z "$sha256" ]; then
-			echo "File already exists, skipping download: $filename"
+			echo "File already exists, skipping download: $filename" >&2
 			return 0
 		fi
 
-		echo -n "Verifying checksum of '$filename'..."
+		echo -n "Verifying checksum of '$filename'..." >&2
 		local local_sha
 		local_sha=$(sha256sum "$path" | awk '{print $1}')
 		if [ "$local_sha" == "$sha256" ]; then
-			echo ' OK. Skipping download.'
+			echo ' OK. Skipping download.' >&2
 			return 0
 		fi
-		echo ' mismatch. Redownloading.'
+		echo ' mismatch. Redownloading.' >&2
 	fi
 
-	echo "Downloading image from $url..."
+	echo "Downloading image from $url..." >&2
 	if ! curl -L --progress-bar -o "$path" "$url"; then
-		echo "${F_RED}ERROR:${F_RESET} Download failed."
+		echo "${F_RED}ERROR:${F_RESET} Download failed." >&2
 		rm -f "$path"
 		exit 1
 	fi
 
 	if [ -n "$sha256" ]; then
-		echo -n 'Verifying checksum of downloaded file...'
+		echo -n 'Verifying checksum of downloaded file...' >&2
 		local local_sha
 		local_sha=$(sha256sum "$path" | awk '{print $1}')
 		if [ "$local_sha" != "$sha256" ]; then
-			echo ' checksum of downloaded file is incorrect!'
+			echo ' checksum of downloaded file is incorrect!' >&2
 			exit 1
 		fi
-		echo ' OK.'
+		echo ' OK.' >&2
 	fi
 }
 
@@ -837,7 +603,7 @@ function _ensure_pool() {
 	if ! virsh pool-info "$name" >/dev/null 2>&1; then
 		_create_pool
 	elif ! virsh pool-list --name | grep -Fqx "$name"; then
-		virsh pool-start "$name" | _trim_empty
+		virsh pool-start "$name" | _trim_empty >&2
 	fi
 }
 
@@ -995,11 +761,186 @@ function _get_file_prefix() {
 	echo "${without_tld##*.}"
 }
 
+function _get_image_info() {
+	local version="$1"
+	local target="$2"
+	local used_images="$3"
+
+	local image_url=''
+	local local_image_path=''
+	local image_sha256=''
+	local image_pool_name=''
+	local kernel_url=''
+	local local_kernel_path=''
+	local kernel_sha256=''
+	local kernel_pool_name=''
+	local image_filename=''
+	local kernel_filename=''
+
+	local prefix
+	prefix=$(_get_file_prefix)
+	local target_flat=${target//\//-}
+
+	# malta releases don't have profiles.json as of 25.12.x
+	# Snapshots do, but they are missing the kernel checksums
+	if [[ "$target" == malta/* ]]; then
+		local checksums_path
+		checksums_path=$(_get_cached_file_path \
+			"$version" "$prefix-$version-$target_flat-checksums.txt"
+		)
+
+		local selected_image
+		selected_image=$(_interactive_menu \
+			"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select an image:${F_RESET}" \
+			'ext4' 'squashfs'
+		) || return 1
+
+		local file_prefix
+		if ! _is_snapshot "$version"; then
+			file_prefix="$prefix-${version}-"
+		else
+			file_prefix="$prefix-"
+		fi
+
+		if ! _is_snapshot "$version"; then
+			kernel_filename="${file_prefix}${target_flat}-vmlinux.elf"
+			image_filename="${file_prefix}${target_flat}-rootfs-${selected_image}.img.gz"
+		else
+			kernel_filename="${file_prefix}${target_flat}-generic-kernel.bin"
+			image_filename="${file_prefix}${target_flat}-generic-${selected_image}-rootfs.img"
+		fi
+
+		local version_code=''
+		if _is_snapshot "$version"; then
+			local profiles_path
+			profiles_path=$(_get_cached_file_path \
+				"$version" "$prefix-$version-$target_flat-profiles.json"
+			)
+			version_code=$(jq -r '.version_code // empty' "$profiles_path" 2>/dev/null)
+		fi
+
+		local local_image_filename="$image_filename"
+		local local_kernel_filename="$kernel_filename"
+		if _is_snapshot "$version" && [ -n "$version_code" ]; then
+			local_image_filename=$(_get_snapshot_filename \
+				"$image_filename" "$prefix" "$version_code"
+			)
+			local_kernel_filename=$(_get_snapshot_filename \
+				"$kernel_filename" "$prefix" "$version_code"
+			)
+		fi
+
+		image_url=$(_get_image_url "$version" "$target" "$image_filename")
+		kernel_url=$(_get_image_url "$version" "$target" "$kernel_filename")
+		local_image_path=$(_get_cached_file_path \
+			"$version" "$local_image_filename"
+		)
+		local_kernel_path=$(_get_cached_file_path \
+			"$version" "$local_kernel_filename"
+		)
+
+		if [ -f "$checksums_path" ]; then
+			image_sha256=$(awk -v f="$image_filename" '$1 == f {print $2}' \
+				"$checksums_path"
+			)
+			kernel_sha256=$(awk -v f="$kernel_filename" '$1 == f {print $2}' \
+				"$checksums_path"
+			)
+		fi
+		image_pool_name=$(_get_available_image_name \
+			"${local_image_filename%.gz}" "$used_images"
+		)
+		kernel_pool_name=$(_get_available_image_name \
+			"$local_kernel_filename" "$used_images"
+		)
+	else
+		local profiles_path
+		profiles_path=$(_get_cached_file_path \
+			"$version" "$prefix-$version-$target_flat-profiles.json"
+		)
+		local profiles_json
+		profiles_json=$(cat "$profiles_path")
+
+		# Extract version code from profiles for snapshots
+		local version_code
+		version_code=$(<<< "$profiles_json" jq -r '.version_code // empty')
+
+		local image_query
+		if [[ "$target" == malta/* ]]; then
+			image_query='
+				.profiles[].images[] |
+				select(.type == "rootfs") |
+				select(.filesystem == "ext4" or .filesystem == "squashfs") |
+				select(.name | endswith(".img.gz")) |
+				"\(.filesystem) \(.type)"
+			'
+		else
+			image_query='
+				.profiles[].images[] |
+				select(.type == "combined" or .type == "combined-efi") |
+				select(.filesystem == "ext4" or .filesystem == "squashfs") |
+				select(.name | endswith(".img.gz")) |
+				"\(.filesystem) \(.type)"
+			'
+		fi
+
+		local image_list
+		image_list=$(<<< "$profiles_json" jq -r "$image_query" | sort | uniq)
+		if [ -z "$image_list" ]; then
+			_print_msg "${F_RED}ERROR:${F_RESET} No images found."
+			return 1
+		fi
+
+		local options
+		readarray -t options <<< "$image_list"
+
+		local selected_image
+		selected_image=$(_interactive_menu \
+			"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select an image:${F_RESET}" \
+			"${options[@]}"
+		) || return 1
+
+		local fs type
+		read -r fs type <<< "$selected_image"
+
+		local image_info
+		image_info=$(<<< "$profiles_json" jq -r --arg fs "$fs" --arg type "$type" '
+			.profiles[].images[] |
+			select(.filesystem == $fs and .type == $type) |
+			select(.name | endswith(".img.gz")) |
+			"\(.name) \(.sha256)"
+		' | head -n 1)
+		read -r image_filename image_sha256 <<<"$image_info"
+		if [ -z "$image_filename" ]; then
+			_print_msg "${F_RED}ERROR:${F_RESET} Metadata error."
+			return 1
+		fi
+
+		local local_image_filename="$image_filename"
+		if _is_snapshot "$version" && [ -n "$version_code" ]; then
+			local_image_filename=$(_get_snapshot_filename \
+				"$image_filename" "$prefix" "$version_code"
+			)
+		fi
+
+		image_url=$(_get_image_url "$version" "$target" "$image_filename")
+		local_image_path=$(_get_cached_file_path \
+			"$version" "$local_image_filename"
+		)
+		image_pool_name=$(_get_available_image_name \
+			"${local_image_filename%.gz}" "$used_images"
+		)
+	fi
+	printf "%s\n" "$image_url" "$local_image_path" "$image_sha256" \
+		"$image_pool_name" "$kernel_url" "$local_kernel_path" "$kernel_sha256" \
+		"$kernel_pool_name" "$selected_image"
+}
+
 function _get_image_url() {
 	local version="$1"
 	local target="$2"
 	local filename="${3:-}"
-	if [ "$version" == 'snapshot' ]; then
+	if _is_snapshot "$version"; then
 		echo "$VADAS_DOWNLOAD_URL/snapshots/targets/$target/$filename"
 	else
 		echo "$VADAS_DOWNLOAD_URL/releases/$version/targets/$target/$filename"
@@ -1072,6 +1013,78 @@ function _get_next_ip() {
 	return 1
 }
 
+function _get_snapshot_filename() {
+	local filename="$1"
+	local prefix="$2"
+	local version_code="$3"
+
+	local new_filename="${filename/$prefix-/$prefix-snapshot-}"
+	if [[ "$new_filename" == *'.img.gz' ]]; then
+		new_filename="${new_filename/.img.gz/-${version_code}.img.gz}"
+	elif [[ "$new_filename" == *"."* ]]; then
+		new_filename="${new_filename%.*}-${version_code}.${new_filename##*.}"
+	else
+		new_filename="${new_filename}-${version_code}"
+	fi
+	echo "$new_filename"
+}
+
+function _get_target_config() {
+	local target="$1"
+	local vm_name="$2"
+
+	local arch=''
+	local boot_wait=0
+	local loader=''
+	local machine=''
+	local nvram_file=''
+	local nvram_template=''
+	local qemu_bin=''
+	local template=''
+
+	case "$target" in
+	armsr/armv8)
+		arch='aarch64'
+		boot_wait=20
+		machine='virt'
+		loader='/usr/share/edk2/aarch64/QEMU_EFI-silent-pflash.qcow2'
+		nvram_file="$VADAS_IMAGE_DIR/$vm_name.nvram"
+		nvram_template='/usr/share/edk2/aarch64/vars-template-pflash.qcow2'
+		qemu_bin='/usr/bin/qemu-system-aarch64'
+		template=vm_arm
+		;;
+	malta/be)
+		arch='mips'
+		qemu_bin='/usr/bin/qemu-system-mips'
+		boot_wait=10
+		template=vm_malta
+		;;
+	malta/le)
+		arch='mipsel'
+		qemu_bin='/usr/bin/qemu-system-mipsel'
+		boot_wait=10
+		template=vm_malta
+		;;
+	x86/64)
+		arch='x86_64'
+		boot_wait=5
+		machine='q35'
+		qemu_bin='/usr/bin/qemu-system-x86_64'
+		template=vm_x86
+		;;
+	x86/generic)
+		arch='i686'
+		boot_wait=5
+		machine='pc'
+		qemu_bin='/usr/bin/qemu-system-i386'
+		template=vm_x86
+		;;
+	esac
+
+	printf "%s\n" "$arch" "$boot_wait" "$loader" "$machine" "$nvram_file" \
+		"$nvram_template" "$qemu_bin" "$template"
+}
+
 function _get_used_images() {
 	_ensure virsh
 	_ensure xmllint
@@ -1118,35 +1131,53 @@ function _get_unique_vm_name() {
 		fi
 	done
 
-	local new_name
+	local new_name error_msg="" lines_printed=0 suggestion="$candidate"
+	_print_msg ''
 	while true; do
-		echo -e "\n${F_DIM}Allowed characters: alphanumeric, dot, dash${F_RESET}" >&2
-		read -r -e -p "${F_BOLD}VM name${F_RESET}: " -i "$candidate" new_name >&2
+		_rollback_output 0
+		_print_msg "${F_DIM}Allowed characters: alphanumeric, dot, dash${F_RESET}"
+		local prompt="${F_BOLD}VM name:${F_RESET} "
+		if [ -n "$error_msg" ]; then
+			# Print a dummy prompt and the error message below it
+			echo "${prompt}${candidate}" >&2
+			echo "$error_msg" >&2
+			# Move cursor back up to the prompt line to allow editing in-place
+			tput cuu 2 >&2
+			tput cr >&2
+			error_msg=''
+		fi
+		read -r -e -p "$prompt" -i "$candidate" new_name >&2
+		# After read, the terminal cursor is on the line where the error was
+		((lines_printed++))
+
 		if [ -z "$new_name" ]; then
-			echo "${F_RED}ERROR:${F_RESET} Name cannot be empty." >&2
+			error_msg="${F_RED}ERROR:${F_RESET} Name cannot be empty."
+			candidate="$suggestion"
 			continue
 		fi
 		if [[ ! "$new_name" =~ ^[a-zA-Z0-9.-]+$ ]]; then
-			echo "${F_RED}ERROR:${F_RESET} Name must contain only alphanumeric characters, dots, and dashes." >&2
+			error_msg="${F_RED}ERROR:${F_RESET} Name must contain only alphanumeric characters, dots, and dashes."
+			candidate="$suggestion"
 			continue
 		fi
 		if grep -qFx "$new_name" <<< "$existing_vms"; then
-			echo "${F_RED}ERROR:${F_RESET} VM '$new_name' already exists." >&2
+			error_msg="${F_RED}ERROR:${F_RESET} VM '$new_name' already exists."
 			base="$new_name"
 			counter=1
 			if [[ "$new_name" =~ ^(.*)-([0-9]+)$ ]]; then
 				base="${BASH_REMATCH[1]}"
 				counter="${BASH_REMATCH[2]}"
 			fi
-			candidate="$new_name"
+			candidate="${base}-${counter}"
 			while grep -qFx "$candidate" <<< "$existing_vms"; do
-				if [[ "$candidate" != "$base" ]]; then
-					((counter++))
-				fi
+				((counter++))
 				candidate="${base}-${counter}"
 			done
+			suggestion="$candidate"
 			continue
 		fi
+		_rollback_output 0
+		_print_msg "${F_GREEN_BOLD}VM name:${F_RESET} $new_name"
 		echo "$new_name"
 		return 0
 	done
@@ -1189,14 +1220,15 @@ function _get_vm_state() {
 }
 
 function _install_image_file() {
-	local method="$1" # cp or gunzip
-	local src="$2"
-	local used_images="$3"
+	local src="$1"
+	local used_images="$2"
 
-	local name
-	if [ "$method" == 'gunzip' ]; then
+	local method name
+	if [[ "$src" == *.gz ]]; then
+		method='gunzip'
 		name=$(basename "$src" .gz)
 	else
+		method='cp'
 		name=$(basename "$src")
 	fi
 
@@ -1341,21 +1373,73 @@ function _print_msg() {
 	fi
 }
 
+function _provision_images() {
+	local image_sha256 image_url kernel_sha256 kernel_url local_image_path \
+		local_kernel_path used_images
+
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-image-sha256) image_sha256="$2"; shift 2 ;;
+		-image-url) image_url="$2"; shift 2 ;;
+		-kernel-sha256) kernel_sha256="$2"; shift 2 ;;
+		-kernel-url) kernel_url="$2"; shift 2 ;;
+		-local-image-path) local_image_path="$2"; shift 2 ;;
+		-local-kernel-path) local_kernel_path="$2"; shift 2 ;;
+		-used-images) used_images="$2"; shift 2 ;;
+		*) echo "Unknown parameter: $1" >&2; return 1 ;;
+		esac
+	done
+
+	_download_image "$image_url" "$local_image_path" "$image_sha256"
+	if [ -n "$kernel_url" ]; then
+		_download_image "$kernel_url" "$local_kernel_path" "$kernel_sha256"
+	fi
+
+	_ensure_pool "$POOL_NAME"
+
+	local image_path kernel_path
+	image_path=$(_install_image_file "$local_image_path" "$used_images")
+	if [ -n "$kernel_url" ]; then
+		kernel_path=$(_install_image_file "$local_kernel_path" "$used_images")
+	fi
+
+	printf "%s\n" "$image_path" "$kernel_path"
+}
+
 function _read_octet() {
 	local prompt="$1"
 	local min="$2"
 	local max="$3"
-	local octet
+	local octet error_msg="" lines_printed=0
+
+	_print_msg ''
 	while true; do
-		read -r -p "${F_BOLD}${prompt}${F_RESET} ${F_DIM}(${min}-${max})${F_RESET} [${F_BOLD}${min}${F_RESET}]: " octet
+		_rollback_output 0
+		local full_prompt="${F_BOLD}${prompt}${F_RESET} ${F_DIM}(${min}-${max})${F_RESET} [${F_BOLD}${min}${F_RESET}]: "
+		if [ -n "$error_msg" ]; then
+			echo "$full_prompt" >&2
+			echo "$error_msg" >&2
+			tput cuu 2 >&2
+			tput cr >&2
+			read -r -p "$full_prompt" octet >&2
+			((lines_printed++))
+			error_msg=""
+		else
+			read -r -p "$full_prompt" octet >&2
+			((lines_printed++))
+		fi
+
 		if [[ -z "$octet" ]]; then
 			octet="$min"
 		fi
+
 		if [[ "$octet" =~ ^[0-9]+$ ]] && (( octet >= min && octet <= max )); then
+			_rollback_output 0
+			_print_msg "${F_GREEN_BOLD}${prompt}:${F_RESET} $octet"
 			echo "$octet"
 			return 0
 		else
-			echo "Invalid input. Please enter a number between $min and $max." >&2
+			error_msg="${F_RED}ERROR:${F_RESET} Invalid input. Please enter a number between $min and $max."
 		fi
 	done
 }
@@ -1404,6 +1488,17 @@ function _select_vm() {
 	fi
 
 	_clean_vm_name "$selected_vm"
+}
+
+function _rollback_output() {
+	local checkpoint="$1"
+	local diff=$((lines_printed - checkpoint))
+
+	if [ "$diff" -gt 0 ]; then
+		tput cuu "$diff" >&2
+		tput ed >&2
+		lines_printed=$checkpoint
+	fi
 }
 
 function _trim_empty() {
@@ -1967,6 +2062,10 @@ function sub_cmd_create_vm() {
 
 	mkdir -p "$VADAS_TEMP_DIR"
 
+	local image_url local_image_path image_sha256 image_pool_name kernel_url \
+		local_kernel_path kernel_sha256 kernel_pool_name selected_image target \
+		used_images version
+
 	readarray -t releases < <(_fetch_releases)
 
 	if [ "${#releases[@]}" -eq 0 ]; then
@@ -1988,12 +2087,12 @@ function sub_cmd_create_vm() {
 
 		local series
 		series=$(_interactive_menu \
-			"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select a release series:${F_RESET}" "${series_options[@]}" \
+			"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select a release series:${F_RESET}" \
+			"${series_options[@]}" \
 		)
 		[ $? -ne 0 ] && exit 0
 
-		local version
-		if [[ "$series" == 'snapshot' ]]; then
+		if _is_snapshot "$series"; then
 			version='snapshot'
 		else
 			local point_releases=()
@@ -2010,7 +2109,8 @@ function sub_cmd_create_vm() {
 			fi
 
 			version=$(_interactive_menu \
-				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a ${series} point release:${F_RESET}" "${point_releases[@]}" \
+				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a ${series} point release:${F_RESET}" \
+				"${point_releases[@]}" \
 			)
 			if [ $? -ne 0 ]; then
 				continue
@@ -2018,11 +2118,13 @@ function sub_cmd_create_vm() {
 		fi
 
 		local lines_printed=0
-		_print_msg "${F_GREEN_BOLD}Selected release:${F_RESET} $version"
+		_print_msg "${F_GREEN_BOLD}Release:${F_RESET} $version"
 
 		local target_list=("${TARGETS[@]}")
 		local targets_path
-		targets_path=$(_get_cached_file_path "$version" "$prefix-$version-targets.txt")
+		targets_path=$(_get_cached_file_path \
+			"$version" "$prefix-$version-targets.txt"
+		)
 		if _fetch_dir_list "$version" '' "$targets_path" 'targets'; then
 			local available_targets
 			available_targets=$(cat "$targets_path")
@@ -2033,12 +2135,17 @@ function sub_cmd_create_vm() {
 				local subtarget="${t#*/}"
 				if grep -qFw "$target" <<< "$available_targets"; then
 					local subtargets_path
-					subtargets_path=$(_get_cached_file_path "$version" "$prefix-$version-$target-subtargets.txt")
+					subtargets_path=$(_get_cached_file_path \
+						"$version" "$prefix-$version-$target-subtargets.txt"
+					)
 					if [[ "$fetched_subtargets" != *" $target "* ]]; then
-						_fetch_dir_list "$version" "$target" "$subtargets_path" "subtargets for $target"
+						_fetch_dir_list "$version" "$target" \
+							"$subtargets_path" "subtargets for $target"
 						fetched_subtargets+="$target "
 					fi
-					if [ -f "$subtargets_path" ] && grep -qFw "$subtarget" "$subtargets_path"; then
+					if [ -f "$subtargets_path" ] &&
+						grep -qFw "$subtarget" "$subtargets_path"
+					then
 						filtered_targets+=("$t")
 					fi
 				fi
@@ -2047,27 +2154,132 @@ function sub_cmd_create_vm() {
 		fi
 
 		while true; do
-			local target
 			target=$(_interactive_menu \
-				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a target:${F_RESET}" "${target_list[@]}" \
+				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a target:${F_RESET}" \
+				"${target_list[@]}" \
 			)
 			if [ $? -ne 0 ]; then
-				tput cuu "$lines_printed"
-				tput ed
+				_rollback_output 0
 				break
 			fi
 			local lines_checkpoint=$lines_printed
-			_print_msg "${F_GREEN_BOLD}Selected target:${F_RESET} $target"
+			_print_msg "${F_GREEN_BOLD}Target:${F_RESET} $target"
 
-			if ! _create_vm "$version" "$target"; then
-				tput cuu $((lines_printed - lines_checkpoint))
-				tput ed
-				lines_printed=$lines_checkpoint
+			used_images=$(_get_used_images)
+			local target_flat=${target//\//-}
+
+			if [[ "$target" == malta/* ]]; then
+				local checksums_path
+				checksums_path=$(_get_cached_file_path \
+					"$version" "$prefix-$version-$target_flat-checksums.txt"
+				)
+				if ! _fetch_checksums "$version" "$target" "$checksums_path"; then
+					_rollback_output "$lines_checkpoint"
+					continue
+				fi
+			else
+				local profiles_path
+				profiles_path=$(_get_cached_file_path \
+					"$version" "$prefix-$version-$target_flat-profiles.json"
+				)
+				if ! _fetch_profiles "$version" "$target" "$profiles_path"; then
+					_rollback_output "$lines_checkpoint"
+					continue
+				fi
+			fi
+
+			local image_info_raw
+			image_info_raw=$(_get_image_info "$version" "$target" "$used_images")
+			if [ $? -ne 0 ]; then
+				_rollback_output "$lines_checkpoint"
 				continue
 			fi
-			return 0
+
+			local image_info
+			readarray -t image_info <<< "$image_info_raw"
+			image_url="${image_info[0]}"
+			local_image_path="${image_info[1]}"
+			image_sha256="${image_info[2]}"
+			image_pool_name="${image_info[3]}"
+			kernel_url="${image_info[4]}"
+			local_kernel_path="${image_info[5]}"
+			kernel_sha256="${image_info[6]}"
+			kernel_pool_name="${image_info[7]}"
+			selected_image="${image_info[8]}"
+
+			_print_msg "${F_GREEN_BOLD}Image:${F_RESET} $selected_image"
+			break 2
 		done
 	done
+
+	local vm_name
+	vm_name=$(_get_unique_vm_name "$(basename "$image_pool_name" .img)")
+
+	local config
+	readarray -t config < <(_get_target_config "$target" "$vm_name")
+	local arch="${config[0]}"
+	local boot_wait="${config[1]}"
+	local loader="${config[2]}"
+	local machine="${config[3]}"
+	local nvram_file="${config[4]}"
+	local nvram_template="${config[5]}"
+	local qemu_bin="${config[6]}"
+	local template="${config[7]}"
+
+	local wan_ip lan_ip
+	wan_ip=$(_get_next_ip wan "$NET_WAN_NAME")
+	lan_ip=$(_get_next_ip lan "$NET_LAN_NAME")
+	if [ -z "$wan_ip" ] || [ -z "$lan_ip" ]; then
+		echo "${F_RED}ERROR:${F_RESET} Failed to allocate IP addresses." >&2
+		exit 1
+	fi
+
+	echo -e "\n${F_BOLD}The following resources will be created:${F_RESET}"
+	[ -n "$kernel_pool_name" ] && echo "  ${F_YELLOW_BOLD}Kernel:${F_RESET} $kernel_pool_name"
+	echo "  ${F_YELLOW_BOLD}Image:${F_RESET} $image_pool_name"
+	[ -n "$nvram_file" ] && echo "  ${F_YELLOW_BOLD}NVRAM:${F_RESET} $(basename "$nvram_file")"
+	echo -e "\n${F_BOLD}The following IP addresses will be allocated:${F_RESET}"
+	echo "  ${F_YELLOW_BOLD}WAN IP:${F_RESET} $wan_ip"
+	echo "  ${F_YELLOW_BOLD}LAN IP:${F_RESET} $lan_ip"
+
+	_confirm 'Continue?' y || exit
+
+	local provisioned_paths
+	readarray -t provisioned_paths < <(_provision_images \
+		-image-url "$image_url" \
+		-local-image-path "$local_image_path" \
+		-image-sha256 "$image_sha256" \
+		-kernel-url "$kernel_url" \
+		-local-kernel-path "$local_kernel_path" \
+		-kernel-sha256 "$kernel_sha256" \
+		-used-images "$used_images"
+	)
+	local image_path="${provisioned_paths[0]}"
+	local kernel_path="${provisioned_paths[1]}"
+
+	_create_vm \
+		-arch "$arch" \
+		-image-path "$image_path" \
+		-kernel-path "$kernel_path" \
+		-lan-ip "$lan_ip" \
+		-loader "$loader" \
+		-machine "$machine" \
+		-nvram-file "$nvram_file" \
+		-nvram-template "$nvram_template" \
+		-qemu-bin "$qemu_bin" \
+		-target "$target" \
+		-template "$template" \
+		-vm-name "$vm_name" \
+		-wan-ip "$wan_ip" || exit 1
+
+	cmd_start "$vm_name"
+
+	if _confirm "Configure network for '$vm_name'?" y; then
+		sub_cmd_configure_vm "$vm_name" "$boot_wait"
+		boot_wait=0
+	fi
+
+	_connect_to_vm "$vm_name" "$boot_wait"
 }
 
 function sub_cmd_list_images() {
