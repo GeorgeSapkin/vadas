@@ -323,114 +323,6 @@ function _countdown() {
 	trap - INT TERM
 }
 
-function _create_network() {
-	_ensure virsh
-
-	local name="$1"
-	local template="$2"
-	local needs_iface="${3:-0}"
-
-	if [ "$needs_iface" -eq 1 ]; then
-		_ensure ip
-	fi
-
-	if virsh net-info "$name" >/dev/null 2>&1; then
-		echo "${F_RED}ERROR:${F_RESET} Network '$name' already exists."
-		return 1
-	fi
-
-	echo "${F_GREEN_BOLD}Network name:${F_RESET} $name"
-
-	while true; do
-		local selected_iface=''
-		if [ "$needs_iface" -eq 1 ]; then
-			local interfaces
-			interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | sort)
-
-			if [ -z "$interfaces" ]; then
-				echo "${F_RED}ERROR:${F_RESET} No network interfaces found."
-				return 1
-			fi
-
-			local options
-			readarray -t options <<< "$interfaces"
-
-			selected_iface=$(_interactive_menu \
-				"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select a forwarding interface for ${name}:${F_RESET}" "${options[@]}" \
-			)
-			if [ $? -ne 0 ]; then
-				return 1
-			fi
-			echo "${F_GREEN_BOLD}Selected forwarding interface:${F_RESET} $selected_iface"
-		fi
-
-		while true; do
-			local selected_range
-			selected_range=$(_interactive_menu \
-				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a network range for ${name}:${F_RESET}" \
-				"${NET_RANGES[@]}" \
-			)
-			if [ $? -ne 0 ]; then
-				tput cuu1
-				tput el
-				if [ "$needs_iface" -eq 1 ]; then
-					break # go back to interface selection
-				else
-					return 1
-				fi
-			fi
-			echo "${F_GREEN_BOLD}Selected network range:${F_RESET} $selected_range"
-
-			local ip_addr octet2 octet3
-			case "$selected_range" in
-			'10.0.0.0/8')
-				octet2=$(_read_octet 'Enter second octet' 0 254)
-				octet3=$(_read_octet 'Enter third octet' 0 254)
-				ip_addr="10.$octet2.$octet3.1"
-				;;
-			'172.16.0.0/12')
-				octet2=$(_read_octet 'Enter second octet' 16 31)
-				octet3=$(_read_octet 'Enter third octet' 0 254)
-				ip_addr="172.$octet2.$octet3.1"
-				;;
-			'192.168.0.0/16')
-				octet3=$(_read_octet 'Enter third octet' 0 254)
-				ip_addr="192.168.$octet3.1"
-				;;
-			esac
-
-			echo "${F_GREEN_BOLD}Virtual gateway IP:${F_RESET} $ip_addr"
-			echo "${F_GREEN_BOLD}Virtual gateway netmask:${F_RESET} $NET_MASK"
-
-			local ip_base="${ip_addr%.*}"
-			local template_args=(
-				"NET_NAME"   "$name"
-				'IP_ADDR'    "$ip_addr"
-				'IP_START'   "${ip_base}.2"
-				'IP_END'     "${ip_base}.254"
-				'NET_MASK'   "$NET_MASK"
-			)
-
-			if [ -n "$selected_iface" ]; then
-				template_args+=('INTERFACE' "$selected_iface")
-			fi
-
-			local net_xml
-			net_xml=$(_render_template "$VADAS_TEMPLATE_DIR/$template" "${template_args[@]}")
-
-			local tmp_xml="$VADAS_TEMP_DIR/$name.xml"
-			mkdir -p "$VADAS_TEMP_DIR"
-			echo "$net_xml" > "$tmp_xml"
-			virsh net-define "$tmp_xml" | _trim_empty
-			virsh net-start "$name" | _trim_empty
-			virsh net-autostart "$name" | _trim_empty
-			rm -f "$tmp_xml"
-
-			return 0
-		done
-	done
-}
-
 function _create_pool() {
 	local pool_xml
 	pool_xml=$(_render_template "$VADAS_TEMPLATE_DIR/pool.xml" \
@@ -443,9 +335,9 @@ function _create_pool() {
 
 	local tmp_xml="$VADAS_TEMP_DIR/${POOL_NAME}.xml"
 	echo "$pool_xml" > "$tmp_xml"
-	virsh pool-define "$tmp_xml" | _trim_empty
-	virsh pool-start "$POOL_NAME" | _trim_empty
-	virsh pool-autostart "$POOL_NAME" | _trim_empty
+	virsh pool-define "$tmp_xml" | _trim_empty >&2
+	virsh pool-start "$POOL_NAME" | _trim_empty >&2
+	virsh pool-autostart "$POOL_NAME" | _trim_empty >&2
 	rm -f "$tmp_xml"
 }
 
@@ -513,6 +405,45 @@ function _create_vm() {
 			exit 1
 		fi
 	fi
+}
+
+function _define_network() {
+	_ensure virsh
+
+	local iface ip_addr name template
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-iface) iface="$2"; shift 2 ;;
+		-ip-addr) ip_addr="$2"; shift 2 ;;
+		-name) name="$2"; shift 2 ;;
+		-template) template="$2"; shift 2 ;;
+		*) echo "Unknown parameter: $1" >&2; return 1 ;;
+		esac
+	done
+
+	local ip_base="${ip_addr%.*}"
+	local template_args=(
+		"NET_NAME"   "$name"
+		'IP_ADDR'    "$ip_addr"
+		'IP_START'   "${ip_base}.2"
+		'IP_END'     "${ip_base}.254"
+		'NET_MASK'   "$NET_MASK"
+	)
+
+	[ -n "$iface" ] && template_args+=('INTERFACE' "$iface")
+
+	local net_xml
+	net_xml=$(_render_template \
+		"$VADAS_TEMPLATE_DIR/$template" "${template_args[@]}"
+	)
+
+	local tmp_xml="$VADAS_TEMP_DIR/$name.xml"
+	mkdir -p "$VADAS_TEMP_DIR"
+	echo "$net_xml" > "$tmp_xml"
+	virsh net-define "$tmp_xml" | _trim_empty
+	virsh net-start "$name" | _trim_empty
+	virsh net-autostart "$name" | _trim_empty
+	rm -f "$tmp_xml"
 }
 
 function _define_vm() {
@@ -1013,6 +944,78 @@ function _get_next_ip() {
 	return 1
 }
 
+function _get_network_info() {
+	_ensure ip
+
+	local name="$1"
+	local needs_iface="${2:-0}"
+	local lines_printed=0
+
+	_print_msg "${F_BOLD}Configure ${name} network:${F_RESET}"
+
+	while true; do
+		local selected_iface=''
+		if [ "$needs_iface" -eq 1 ]; then
+			local interfaces
+			interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | sort)
+
+			if [ -z "$interfaces" ]; then
+				_print_msg "${F_RED}ERROR:${F_RESET} No network interfaces found."
+				return 1
+			fi
+
+			local options
+			readarray -t options <<< "$interfaces"
+
+			selected_iface=$(_interactive_menu \
+				"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select a forwarding interface for ${name}:${F_RESET}" "${options[@]}" \
+			)
+			if [ $? -ne 0 ]; then
+				return 1
+			fi
+			_print_msg "${F_GREEN_BOLD}Forwarding interface:${F_RESET} $selected_iface"
+		fi
+
+		while true; do
+			local selected_range
+			selected_range=$(_interactive_menu \
+				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a network range for ${name}:${F_RESET}" \
+				"${NET_RANGES[@]}" \
+			)
+			if [ $? -ne 0 ]; then
+				_rollback_output 1
+				if [ "$needs_iface" -eq 1 ]; then
+					break # go back to interface selection
+				else
+					return 1
+				fi
+			fi
+			_print_msg "${F_GREEN_BOLD}Network range:${F_RESET} $selected_range"
+
+			local ip_addr octet2 octet3
+			case "$selected_range" in
+			'10.0.0.0/8')
+				octet2=$(_read_octet 'Second octet' 0 254)
+				octet3=$(_read_octet 'Third octet' 0 254)
+				ip_addr="10.$octet2.$octet3.1"
+				;;
+			'172.16.0.0/12')
+				octet2=$(_read_octet 'Second octet' 16 31)
+				octet3=$(_read_octet 'Third octet' 0 254)
+				ip_addr="172.$octet2.$octet3.1"
+				;;
+			'192.168.0.0/16')
+				octet3=$(_read_octet 'Third octet' 0 254)
+				ip_addr="192.168.$octet3.1"
+				;;
+			esac
+
+			printf "%s\n%s\n" "$ip_addr" "$selected_iface"
+			return 0
+		done
+	done
+}
+
 function _get_snapshot_filename() {
 	local filename="$1"
 	local prefix="$2"
@@ -1131,7 +1134,10 @@ function _get_unique_vm_name() {
 		fi
 	done
 
-	local new_name error_msg="" lines_printed=0 suggestion="$candidate"
+	local new_name
+	local error_msg=''
+	local suggestion="$candidate"
+	local lines_printed=0
 	_print_msg ''
 	while true; do
 		_rollback_output 0
@@ -1410,8 +1416,9 @@ function _read_octet() {
 	local prompt="$1"
 	local min="$2"
 	local max="$3"
-	local octet error_msg="" lines_printed=0
 
+	local octet error_msg=''
+	local lines_printed=0
 	_print_msg ''
 	while true; do
 		_rollback_output 0
@@ -1423,7 +1430,7 @@ function _read_octet() {
 			tput cr >&2
 			read -r -p "$full_prompt" octet >&2
 			((lines_printed++))
-			error_msg=""
+			error_msg=''
 		else
 			read -r -p "$full_prompt" octet >&2
 			((lines_printed++))
@@ -2031,11 +2038,52 @@ function sub_cmd_configure_vm() {
 }
 
 function sub_cmd_create_network() {
-	_create_network "$NET_WAN_NAME" 'net_wan.xml' 1
+	_ensure virsh
+
+	if virsh net-info "$NET_WAN_NAME" >/dev/null 2>&1; then
+		echo "${F_RED}ERROR:${F_RESET} Network '$NET_WAN_NAME' already exists."
+		return 1
+	fi
+	if virsh net-info "$NET_LAN_NAME" >/dev/null 2>&1; then
+		echo "${F_RED}ERROR:${F_RESET} Network '$NET_LAN_NAME' already exists."
+		return 1
+	fi
+
+	local wan_info_raw wan_info
+	wan_info_raw=$(_get_network_info WAN 1) || return 1
+	readarray -t wan_info <<< "$wan_info_raw"
+	local wan_ip="${wan_info[0]}"
+	local wan_iface="${wan_info[1]}"
 
 	echo
 
-	_create_network "$NET_LAN_NAME" 'net_lan.xml'
+	local lan_info_raw lan_info
+	lan_info_raw=$(_get_network_info LAN 0) || return 1
+	readarray -t lan_info <<< "$lan_info_raw"
+	local lan_ip="${lan_info[0]}"
+
+	echo -e "\n${F_BOLD}The following networks will be created:${F_RESET}"
+	echo "  ${F_YELLOW_BOLD}WAN name:${F_RESET}      $NET_WAN_NAME"
+	echo "  ${F_YELLOW_BOLD}WAN gateway:${F_RESET}   $wan_ip"
+	echo "  ${F_YELLOW_BOLD}WAN netmask:${F_RESET}   $NET_MASK"
+	echo "  ${F_YELLOW_BOLD}WAN interface:${F_RESET} $wan_iface"
+	echo
+	echo "  ${F_YELLOW_BOLD}LAN name:${F_RESET}      $NET_LAN_NAME"
+	echo "  ${F_YELLOW_BOLD}LAN gateway:${F_RESET}   $lan_ip"
+	echo "  ${F_YELLOW_BOLD}LAN netmask:${F_RESET}   $NET_MASK"
+
+	_confirm 'Continue?' y || exit
+
+	_define_network \
+		-iface "$wan_iface" \
+		-ip-addr "$wan_ip" \
+		-name "$NET_WAN_NAME" \
+		-template 'net_wan.xml'
+
+	_define_network \
+		-ip-addr "$lan_ip" \
+		-name "$NET_LAN_NAME" \
+		-template 'net_lan.xml'
 }
 
 function sub_cmd_create_pool() {
@@ -2235,12 +2283,13 @@ function sub_cmd_create_vm() {
 	fi
 
 	echo -e "\n${F_BOLD}The following resources will be created:${F_RESET}"
-	[ -n "$kernel_pool_name" ] && echo "  ${F_YELLOW_BOLD}Kernel:${F_RESET} $kernel_pool_name"
-	echo "  ${F_YELLOW_BOLD}Image:${F_RESET} $image_pool_name"
-	[ -n "$nvram_file" ] && echo "  ${F_YELLOW_BOLD}NVRAM:${F_RESET} $(basename "$nvram_file")"
+	echo "  ${F_YELLOW_BOLD}VM name:${F_RESET} $vm_name"
+	[ -n "$kernel_pool_name" ] && echo "  ${F_YELLOW_BOLD}Kernel:${F_RESET}  $kernel_pool_name"
+	echo "  ${F_YELLOW_BOLD}Image:${F_RESET}   $image_pool_name"
+	[ -n "$nvram_file" ] && echo "  ${F_YELLOW_BOLD}NVRAM:${F_RESET}   $(basename "$nvram_file")"
 	echo -e "\n${F_BOLD}The following IP addresses will be allocated:${F_RESET}"
-	echo "  ${F_YELLOW_BOLD}WAN IP:${F_RESET} $wan_ip"
-	echo "  ${F_YELLOW_BOLD}LAN IP:${F_RESET} $lan_ip"
+	echo "  ${F_YELLOW_BOLD}WAN IP:${F_RESET}  $wan_ip"
+	echo "  ${F_YELLOW_BOLD}LAN IP:${F_RESET}  $lan_ip"
 
 	_confirm 'Continue?' y || exit
 
