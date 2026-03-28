@@ -2306,10 +2306,16 @@ function sub_cmd_list_images() {
 function sub_cmd_remove_all() {
 	_ensure virsh
 
-	echo -e "${F_RED}${F_BOLD}WARNING: This will delete ALL Vadas VMs, networks, and the storage pool.${F_RESET}\n"
-
 	local vms
-	vms=$(_get_vm_list --all)
+	vms=$(_get_vm_list --all | _trim_empty)
+
+	local suffix=''
+	if [ -n "$vms" ]; then
+		suffix=$'\n'
+	fi
+
+	echo -e "${F_RED}${F_BOLD}WARNING: This will delete ALL Vadas VMs, networks, and the storage pool.${F_RESET}${suffix}"
+
 	_format_vms_for_menu "$vms"
 
 	if ! _confirm 'Are you sure you want to proceed? This cannot be undone.'; then
