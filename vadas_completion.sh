@@ -271,11 +271,11 @@ function _vadas_sh_completion() {
 			;;
 		vm)
 			local parent="${COMP_WORDS[COMP_CWORD-2]}"
-			if [ "${parent}" == 'configure' ]; then
-				_comp_vms --state-running
-			else
-				_comp_vms --all
-			fi
+			case "${parent}" in
+				configure) _comp_vms --state-running ;;
+				create)    COMPREPLY=( $(compgen -W "--from-local ${help_opts}" -- "${cur}") ) ;;
+				*)         _comp_vms --all ;;
+			esac
 			return 0
 			;;
 		ip)
@@ -286,13 +286,17 @@ function _vadas_sh_completion() {
 			return 0
 			;;
 		pause|suspend)
-				_comp_vms --state-running "${help_opts}"
-				return 0
-				;;
+			_comp_vms --state-running "${help_opts}"
+			return 0
+			;;
+		ps)
+			COMPREPLY=( $(compgen -W "${ps_opts}" -- "${cur}") )
+			return 0
+			;;
 		resume)
-				_comp_vms --state-paused "${help_opts}"
-				return 0
-				;;
+			_comp_vms --state-paused "${help_opts}"
+			return 0
+			;;
 		start)
 			_comp_vms --state-paused --state-shutoff "${help_opts}"
 			return 0
@@ -308,8 +312,9 @@ function _vadas_sh_completion() {
 			fi
 			return 0
 			;;
-		ps)
-			COMPREPLY=( $(compgen -W "${ps_opts}" -- "${cur}") )
+		--from-local)
+			compopt -o filenames
+			COMPREPLY=( $(compgen -f -- "${cur}") )
 			return 0
 			;;
 		*)

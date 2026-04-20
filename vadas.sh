@@ -89,7 +89,8 @@ function _print_help() {
 		Subcommands:
 		  network         Interactively create the virtual networks
 		  pool            Create the storage pool
-		  vm              Interactively create a new VM
+		  vm [--from-local <path>]
+		                  Interactively create a new VM (or use local image)
 		EOF
 		;;
 	clean)
@@ -1396,7 +1397,9 @@ function _provision_images() {
 		esac
 	done
 
-	_download_image "$image_url" "$local_image_path" "$image_sha256"
+	if [ -n "$image_url" ]; then
+		_download_image "$image_url" "$local_image_path" "$image_sha256"
+	fi
 	if [ -n "$kernel_url" ]; then
 		_download_image "$kernel_url" "$local_kernel_path" "$kernel_sha256"
 	fi
@@ -1642,7 +1645,8 @@ function cmd_create() {
 		sub_cmd_create_pool
 		;;
 	vm)
-		sub_cmd_create_vm
+		shift
+		sub_cmd_create_vm "$@"
 		;;
 	*)
 		_print_help create
@@ -2110,155 +2114,183 @@ function sub_cmd_create_vm() {
 
 	mkdir -p "$VADAS_TEMP_DIR"
 
+	local local_path=''
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--from-local)
+			if [ -z "${2:-}" ]; then
+				_print_help create
+				exit 1
+			fi
+			local_path="$2"
+			shift 2
+			;;
+		*) shift ;;
+		esac
+	done
+
 	local image_url local_image_path image_sha256 image_pool_name kernel_url \
 		local_kernel_path kernel_sha256 kernel_pool_name selected_image target \
 		used_images version
 
-	readarray -t releases < <(_fetch_releases)
+	if [ -n "$local_path" ]; then
+		if [ ! -f "$local_path" ]; then
+			echo "${F_RED}ERROR:${F_RESET} File '$local_path' not found." >&2
+			exit 1
+		fi
+		target='x86/64'
+		version='local'
+		local_image_path="$local_path"
+		selected_image=$(basename "$local_path")
+		used_images=$(_get_used_images)
+		image_pool_name=$(_get_available_image_name "${selected_image%.gz}" "$used_images")
+	else
+		readarray -t releases < <(_fetch_releases)
 
-	if [ "${#releases[@]}" -eq 0 ]; then
-		echo "${F_RED}ERROR:${F_RESET} No releases found."
-		exit 1
-	fi
-
-	local prefix
-	prefix=$(_get_file_prefix)
-
-	while true; do
-		local series_options=('snapshot')
-		local major_minors
-		if [ "${#releases[@]}" -gt 0 ]; then
-			major_minors=$(printf '%s\n' "${releases[@]}" | cut -d. -f1,2 | sort -rV | uniq)
-			readarray -t mm_arr <<< "$major_minors"
-			series_options+=("${mm_arr[@]}")
+		if [ "${#releases[@]}" -eq 0 ]; then
+			echo "${F_RED}ERROR:${F_RESET} No releases found."
+			exit 1
 		fi
 
-		local series
-		series=$(_interactive_menu \
-			"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select a release series:${F_RESET}" \
-			"${series_options[@]}" \
-		)
-		[ $? -ne 0 ] && exit 0
-
-		if _is_snapshot "$series"; then
-			version='snapshot'
-		else
-			local point_releases=()
-			for r in "${releases[@]}"; do
-				if [[ "$r" == "$series".* ]]; then
-					point_releases+=("$r")
-				fi
-			done
-			readarray -t point_releases < <(printf '%s\n' "${point_releases[@]}" | sort -rV)
-
-			# Show snapshots only for the newest two series
-			if [[ "$series" == "${mm_arr[0]}" || "$series" == "${mm_arr[1]}" ]]; then
-				point_releases=("${series}-SNAPSHOT" "${point_releases[@]}")
-			fi
-
-			version=$(_interactive_menu \
-				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a ${series} point release:${F_RESET}" \
-				"${point_releases[@]}" \
-			)
-			if [ $? -ne 0 ]; then
-				continue
-			fi
-		fi
-
-		local lines_printed=0
-		_print_msg "${F_GREEN_BOLD}Release:${F_RESET} $version"
-
-		local target_list=("${TARGETS[@]}")
-		local targets_path
-		targets_path=$(_get_cached_file_path \
-			"$version" "$prefix-$version-targets.txt"
-		)
-		if _fetch_dir_list "$version" '' "$targets_path" 'targets'; then
-			local available_targets
-			available_targets=$(cat "$targets_path")
-			local filtered_targets=()
-			local fetched_subtargets=' '
-			for t in "${target_list[@]}"; do
-				local target="${t%%/*}"
-				local subtarget="${t#*/}"
-				if grep -qFw "$target" <<< "$available_targets"; then
-					local subtargets_path
-					subtargets_path=$(_get_cached_file_path \
-						"$version" "$prefix-$version-$target-subtargets.txt"
-					)
-					if [[ "$fetched_subtargets" != *" $target "* ]]; then
-						_fetch_dir_list "$version" "$target" \
-							"$subtargets_path" "subtargets for $target"
-						fetched_subtargets+="$target "
-					fi
-					if [ -f "$subtargets_path" ] &&
-						grep -qFw "$subtarget" "$subtargets_path"
-					then
-						filtered_targets+=("$t")
-					fi
-				fi
-			done
-			target_list=("${filtered_targets[@]}")
-		fi
+		local prefix
+		prefix=$(_get_file_prefix)
 
 		while true; do
-			target=$(_interactive_menu \
-				"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a target:${F_RESET}" \
-				"${target_list[@]}" \
+			local series_options=('snapshot')
+			local major_minors
+			if [ "${#releases[@]}" -gt 0 ]; then
+				major_minors=$(printf '%s\n' "${releases[@]}" | cut -d. -f1,2 | sort -rV | uniq)
+				readarray -t mm_arr <<< "$major_minors"
+				series_options+=("${mm_arr[@]}")
+			fi
+
+			local series
+			series=$(_interactive_menu \
+				"${F_RESET}${F_DIM}${MENU_HELP_EXIT}${F_RESET}\n${F_BOLD}Select a release series:${F_RESET}" \
+				"${series_options[@]}" \
 			)
-			if [ $? -ne 0 ]; then
-				_rollback_output 0
-				break
-			fi
-			local lines_checkpoint=$lines_printed
-			_print_msg "${F_GREEN_BOLD}Target:${F_RESET} $target"
+			[ $? -ne 0 ] && exit 0
 
-			used_images=$(_get_used_images)
-			local target_flat=${target//\//-}
-
-			if [[ "$target" == malta/* ]]; then
-				local checksums_path
-				checksums_path=$(_get_cached_file_path \
-					"$version" "$prefix-$version-$target_flat-checksums.txt"
-				)
-				if ! _fetch_checksums "$version" "$target" "$checksums_path"; then
-					_rollback_output "$lines_checkpoint"
-					continue
-				fi
+			if _is_snapshot "$series"; then
+				version='snapshot'
 			else
-				local profiles_path
-				profiles_path=$(_get_cached_file_path \
-					"$version" "$prefix-$version-$target_flat-profiles.json"
+				local point_releases=()
+				for r in "${releases[@]}"; do
+					if [[ "$r" == "$series".* ]]; then
+						point_releases+=("$r")
+					fi
+				done
+				readarray -t point_releases < <(printf '%s\n' "${point_releases[@]}" | sort -rV)
+
+				# Show snapshots only for the newest two series
+				if [[ "$series" == "${mm_arr[0]}" || "$series" == "${mm_arr[1]}" ]]; then
+					point_releases=("${series}-SNAPSHOT" "${point_releases[@]}")
+				fi
+
+				version=$(_interactive_menu \
+					"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a ${series} point release:${F_RESET}" \
+					"${point_releases[@]}" \
 				)
-				if ! _fetch_profiles "$version" "$target" "$profiles_path"; then
-					_rollback_output "$lines_checkpoint"
+				if [ $? -ne 0 ]; then
 					continue
 				fi
 			fi
 
-			local image_info_raw
-			image_info_raw=$(_get_image_info "$version" "$target" "$used_images")
-			if [ $? -ne 0 ]; then
-				_rollback_output "$lines_checkpoint"
-				continue
+			local lines_printed=0
+			_print_msg "${F_GREEN_BOLD}Release:${F_RESET} $version"
+
+			local target_list=("${TARGETS[@]}")
+			local targets_path
+			targets_path=$(_get_cached_file_path \
+				"$version" "$prefix-$version-targets.txt"
+			)
+			if _fetch_dir_list "$version" '' "$targets_path" 'targets'; then
+				local available_targets
+				available_targets=$(cat "$targets_path")
+				local filtered_targets=()
+				local fetched_subtargets=' '
+				for t in "${target_list[@]}"; do
+					local target="${t%%/*}"
+					local subtarget="${t#*/}"
+					if grep -qFw "$target" <<< "$available_targets"; then
+						local subtargets_path
+						subtargets_path=$(_get_cached_file_path \
+							"$version" "$prefix-$version-$target-subtargets.txt"
+						)
+						if [[ "$fetched_subtargets" != *" $target "* ]]; then
+							_fetch_dir_list "$version" "$target" \
+								"$subtargets_path" "subtargets for $target"
+							fetched_subtargets+="$target "
+						fi
+						if [ -f "$subtargets_path" ] &&
+							grep -qFw "$subtarget" "$subtargets_path"
+						then
+							filtered_targets+=("$t")
+						fi
+					fi
+				done
+				target_list=("${filtered_targets[@]}")
 			fi
 
-			local image_info
-			readarray -t image_info <<< "$image_info_raw"
-			image_url="${image_info[0]}"
-			local_image_path="${image_info[1]}"
-			image_sha256="${image_info[2]}"
-			image_pool_name="${image_info[3]}"
-			kernel_url="${image_info[4]}"
-			local_kernel_path="${image_info[5]}"
-			kernel_sha256="${image_info[6]}"
-			kernel_pool_name="${image_info[7]}"
-			selected_image="${image_info[8]}"
+			while true; do
+				target=$(_interactive_menu \
+					"${F_RESET}${F_DIM}${MENU_HELP_BACK}${F_RESET}\n${F_BOLD}Select a target:${F_RESET}" \
+					"${target_list[@]}" \
+				)
+				if [ $? -ne 0 ]; then
+					_rollback_output 0
+					break
+				fi
+				local lines_checkpoint=$lines_printed
+				_print_msg "${F_GREEN_BOLD}Target:${F_RESET} $target"
 
-			_print_msg "${F_GREEN_BOLD}Image:${F_RESET} $selected_image"
-			break 2
+				used_images=$(_get_used_images)
+				local target_flat=${target//\//-}
+
+				if [[ "$target" == malta/* ]]; then
+					local checksums_path
+					checksums_path=$(_get_cached_file_path \
+						"$version" "$prefix-$version-$target_flat-checksums.txt"
+					)
+					if ! _fetch_checksums "$version" "$target" "$checksums_path"; then
+						_rollback_output "$lines_checkpoint"
+						continue
+					fi
+				else
+					local profiles_path
+					profiles_path=$(_get_cached_file_path \
+						"$version" "$prefix-$version-$target_flat-profiles.json"
+					)
+					if ! _fetch_profiles "$version" "$target" "$profiles_path"; then
+						_rollback_output "$lines_checkpoint"
+						continue
+					fi
+				fi
+
+				local image_info_raw
+				image_info_raw=$(_get_image_info "$version" "$target" "$used_images")
+				if [ $? -ne 0 ]; then
+					_rollback_output "$lines_checkpoint"
+					continue
+				fi
+
+				local image_info
+				readarray -t image_info <<< "$image_info_raw"
+				image_url="${image_info[0]}"
+				local_image_path="${image_info[1]}"
+				image_sha256="${image_info[2]}"
+				image_pool_name="${image_info[3]}"
+				kernel_url="${image_info[4]}"
+				local_kernel_path="${image_info[5]}"
+				kernel_sha256="${image_info[6]}"
+				kernel_pool_name="${image_info[7]}"
+				selected_image="${image_info[8]}"
+
+				_print_msg "${F_GREEN_BOLD}Image:${F_RESET} $selected_image"
+				break 2
+			done
 		done
-	done
+	fi
 
 	local vm_name
 	vm_name=$(_get_unique_vm_name "$(basename "$image_pool_name" .img)")
@@ -2555,7 +2587,7 @@ clean)           cmd_clean "$2" ;;
 connect)         cmd_connect "${@:2}" ;;
 configure)       cmd_configure "${@:2}" ;;
 cp|copy)         cmd_cp "${@:2}" ;;
-create)          cmd_create "$2" ;;
+create)          cmd_create "${@:2}" ;;
 env)             cmd_env "$2" ;;
 exec)            cmd_exec "${@:2}" ;;
 images)          sub_cmd_list_images ;;

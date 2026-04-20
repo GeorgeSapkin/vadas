@@ -26,19 +26,20 @@ Supported architectures (depending on the availability in a release):
 
 ## Features
 
-- **Multi-Architecture**: Seamlessly creates VMs for x86-64, ARMv8, and MIPS,
-  both for release versions and snapshots.
-- **Simplified Networking**: Automates OpenWrt network configuration (separate
-  WAN and LAN, IP, gateway, DNS) via config injection through a serial console,
-  so newly-created VMs get internet access out of the box.
-- **Image Management**: Automatically downloads, verifies, and caches official
-  OpenWrt images; cleans up unused artifacts.
-- **Isolated Environments**: Supports multiple concurrent instances of the same
-  release/target.
-- **Interactive CLI**: Menu-driven interface for ease of use, with Bash
-  completion support for VM names and paths.
-- **File Transfer**: Integrated `cp` command for bi-directional file transfer
-  between host and guest.
+- Seamlessly creates VMs for x86-64, ARMv8, and MIPS, both for release versions
+  and snapshots.
+- Automates OpenWrt network configuration (separate WAN and LAN, IP, gateway,
+  DNS) via config injection through a serial console, so newly-created VMs get
+  internet access out of the box.
+- Automatically downloads, verifies, and caches official OpenWrt images; cleans
+  up unused artifacts.
+- Supports locally-created (via e.g. [Bouwer](https://github.com/GeorgeSapkin/bouwer))
+  x86/64 images.
+- Supports multiple concurrent instances of the same release/target.
+- Menu-driven interface for ease of use, with Bash completion support for VM
+  names and paths.
+- Integrated `cp` command for bi-directional file transfer between host and
+  guest.
 
 ## Dependencies
 
@@ -177,7 +178,7 @@ When no arguments are supplied, most commands are interactive.
 | `cp [-r] <src> ... <dest>`       | Copy files and directories to and from a VM. |
 | `create network`                 | Interactively create the `vadas-wan` and `vadas-lan` virtual networks. |
 | `create pool`                    | Create the `vadas` storage pool. |
-| `create vm`                      | Interactively download an OpenWrt image and create a new VM. |
+| `create vm [--from-local <path>]` | Interactively download an OpenWrt image or use a local image to create a new VM. |
 | `exec <vm_name> <commands>`      | Execute commands on a running VM via its console. |
 | `list images`                    | List all downloaded disk images. |
 | `list vm`                        | List all VMs managed by `vadas`. |
@@ -206,3 +207,5 @@ These can be tweaked to change the paths, but this has not been tested.
 ## License
 
 GNU General Public License v2.0 only
+
+Copyright (C) 2025-2026 George Sapkin
